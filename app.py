@@ -204,10 +204,10 @@ if authentication_status != True:
     # Features box
     st.markdown("""
     <div style='max-width: 450px; margin: 0 auto; padding: 25px; background-color: #4A4A4A; border-radius: 10px; text-align: left;'>
-        <p style='color: #E0E0E0; font-size: 18px; margin: 10px 0;'>🔮 Machine Learning forecasts with regime detection</p>
-        <p style='color: #E0E0E0; font-size: 18px; margin: 10px 0;'>📊 Dual confidence intervals (GARCH + Bootstrap)</p>
-        <p style='color: #E0E0E0; font-size: 18px; margin: 10px 0;'>🎯 Walk-forward validated performance metrics</p>
-        <p style='color: #E0E0E0; font-size: 18px; margin: 10px 0;'>🤖 AI Assistant for forecast interpretation</p>
+        <p style='color: #E0E0E0; font-size: 18px; margin: 10px 0;'>📐 Bandas de riesgo con cobertura empírica medida</p>
+        <p style='color: #E0E0E0; font-size: 18px; margin: 10px 0;'>📊 Motor HAR-RV — cuatro parámetros, sin machine learning</p>
+        <p style='color: #E0E0E0; font-size: 18px; margin: 10px 0;'>🔍 Detección de regímenes y contexto técnico descriptivo</p>
+        <p style='color: #E0E0E0; font-size: 18px; margin: 10px 0;'>🩺 Track record auditable, sellado con commits diarios</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -226,7 +226,7 @@ if authentication_status != True:
     st.markdown("""
     <div style='text-align: center; margin-top: 20px;'>
         <p style='color: #909090; font-size: 18px;'>
-            Don't have an account? Contact: <a href='https://docs.google.com/forms/d/e/1FAIpQLSdXaPtX28px7kXow-JcQhTOqqzuhkgovLhyIvTORzXoYMTE_g/viewform' target='_blank' style='color: #F5A05A;'>XGBit Request Access</a>
+            Don't have an account? Contact: <a href='https://docs.google.com/forms/d/e/1FAIpQLSdXaPtX28px7kXow-JcQhTOqqzuhkgovLhyIvTORzXoYMTE_g/viewform' target='_blank' style='color: #F5A05A;'>Solicitar acceso</a>
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -708,10 +708,15 @@ def qlike(y, f):
 # ============================================================================
 col_logo, col_title = st.columns([1, 5])
 with col_logo:
-    try:
-        st.image("assets/XGBit_Logo.JPG", width=170)
-    except Exception:
-        st.markdown("<div style='font-size:64px'>📊</div>", unsafe_allow_html=True)
+    _logo = None
+    for _p in ("assets/LOGO HindsAnalytics v2026.png", "assets/XGBit_Logo.JPG"):
+        if os.path.exists(_p):
+            _logo = _p
+            break
+    if _logo:
+        st.image(_logo, width=120)
+    else:
+        st.markdown("<div style='font-size:56px'>📊</div>", unsafe_allow_html=True)
 with col_title:
     st.markdown("""
     <div style='padding: 0; margin-bottom: 0;'>
@@ -793,6 +798,175 @@ with st.sidebar:
             st.rerun()
     except Exception:
         pass
+
+
+# ============================================================================
+# ASISTENTE AI
+# ----------------------------------------------------------------------------
+# El prompt se reescribio por completo respecto de la version XGBoost: aquel
+# giraba en torno a la P direccional y al calculo de EV con esa probabilidad,
+# que en esta version NO existe (resolucion medida 0,0002, AUC 0,503 -> la P no
+# discriminaba y se retiro). Aqui el asistente explica bandas, volatilidad,
+# regimenes y dimensionamiento, y tiene prohibido dar direccion.
+# ============================================================================
+def construir_contexto():
+    """Arma el estado actual de la app para el prompt del asistente."""
+    fd = st.session_state.get('forecast_df')
+    cov = st.session_state.get('band_coverage', {})
+    cal = st.session_state.get('calidad')
+    coef = st.session_state.get('har_coef')
+    sig = st.session_state.get('sig_path')
+    rs = st.session_state.get('regime_stats')
+    lp = st.session_state.get('last_price')
+    if fd is None:
+        return "Todavia no se han generado bandas en esta sesion."
+
+    lo1, hi1 = fd['Piso 95%'].iloc[0], fd['Techo 95%'].iloc[0]
+    semi = (hi1 - lo1) / 2 / lp * 100
+    partes = [
+        f"Precio actual (ultimo cierre): ${lp:,.2f}",
+        f"Volatilidad esperada manana: {sig[0]*100:.2f}% diario",
+        f"Banda 95% dia 1: ${lo1:,.0f} - ${hi1:,.0f} (semiancho +-{semi:.2f}%)",
+        f"Banda 95% dia {len(fd)}: ${fd['Piso 95%'].iloc[-1]:,.0f} - ${fd['Techo 95%'].iloc[-1]:,.0f}",
+        f"Cobertura empirica medida: banda 95% -> {cov.get('coverage_pct', float('nan')):.1f}%, "
+        f"banda 68% -> {cov.get('coverage_68_pct', float('nan')):.1f}% "
+        f"(sobre {cov.get('n_days', 0)} dias out-of-sample)",
+    ]
+    if coef is not None:
+        partes.append(f"Ecuacion HAR ajustada: RV(t+1) = {coef[0]:.5f} + {coef[1]:.3f}*RV_dia "
+                      f"+ {coef[2]:.3f}*RV_semana + {coef[3]:.3f}*RV_mes")
+    if cal is not None and len(cal):
+        partes.append("Comparacion QLIKE (menor es mejor): " +
+                      " | ".join(f"{r['modelo']}={r['QLIKE']}" for _, r in cal.iterrows()))
+    if rs is not None and len(rs):
+        u = rs.iloc[-1]
+        partes.append(f"Regimen vigente: {int(u['days'])} dias de antiguedad, "
+                      f"volatilidad {u['volatility_%']}%/dia, deriva acumulada {u['total_return_%']}%")
+    return "\n".join(partes)
+
+
+PROMPT_SISTEMA = """Eres el asistente de BTC Risk Bands, una herramienta de analisis
+cuantitativo de Bitcoin. Tu funcion es explicar BANDAS DE RIESGO, VOLATILIDAD,
+REGIMENES y DIMENSIONAMIENTO DE POSICION. No eres asesor financiero ni generas senales.
+
+QUE ES ESTE PRODUCTO (y que NO es):
+- Publica el RANGO probable del precio, con la cobertura de ese rango medida y verificable.
+- El motor es HAR-RV (Corsi, 2009): RV(t+1) = c + b_d*RV_dia + b_w*RV_semana + b_m*RV_mes.
+  Cuatro parametros por minimos cuadrados. No hay machine learning.
+- NO pronostica direccion, y esto no es modestia: doce experimentos con protocolo
+  anti-sesgo lo establecieron. El Theil U2 fue 1,046 con IC95 [1,025-1,080], es decir
+  PEOR que el pronostico ingenuo "manana = hoy", con Diebold-Mariano significativo.
+  La probabilidad direccional que existia en la version anterior se retiro porque su
+  resolucion medida fue 0,0002 y su AUC 0,503: no discriminaba nada.
+- XGBoost fue eliminado tras perder frente a HAR-RV en QLIKE y no mostrar ventaja
+  significativa ni con 3.000 observaciones de test (p=0,31).
+
+COMO EXPLICAR EL DIMENSIONAMIENTO (es tu funcion principal):
+  tamano_posicion = riesgo_maximo / semiancho_de_banda
+Ejemplo: riesgo maximo 2% del capital y semiancho +-4% -> 0,5x el tamano estandar.
+Cuando la volatilidad esperada sube, la banda se ensancha y el tamano debe bajar en
+proporcion. Muestra el calculo con los numeros concretos que te de el usuario.
+
+REGLAS QUE PUEDES ENSENAR:
+1. Banda = presupuesto de riesgo -> dimensiona la posicion.
+2. Stops FUERA de la banda 95%; targets DENTRO. Un stop dentro de la banda es ruido
+   esperado y te sacara sin que ocurra nada informativo.
+3. La volatilidad esperada indica cuanto encoger o ampliar la exposicion.
+4. Esta herramienta no da direccion: si el usuario opera, la tesis direccional debe
+   venir de otro lado; esto dimensiona el riesgo de esa tesis.
+5. Cambio de regimen detectado = revisar posiciones, no abrir tamano nuevo.
+
+COMO INTERPRETAR LA COBERTURA:
+- La banda 95% deberia contener el cierre real ~95% de los dias, y la de 68% un ~68%.
+- Si el 95% cubre pero el 68% no, la forma de la distribucion esta mal aunque las colas
+  acierten. Por eso se publican dos niveles.
+- Si la cobertura esta por debajo de lo nominal, el usuario debe ampliar el semiancho al
+  dimensionar (por ejemplo multiplicar por 1,2) hasta que la cobertura viva lo confirme.
+
+ESTADO ACTUAL DE LA APP:
+{contexto}
+
+PROHIBIDO (reglas duras, sin excepciones):
+1. NO recomendar direccion: nunca digas comprar, vender, ir largo o corto, ni sugieras
+   puntos de entrada o salida. Si te lo piden, reencuadra hacia el dimensionamiento y la
+   colocacion de stops, y recuerda que la decision direccional es del usuario.
+2. NO afirmar rendimiento superior, alta precision, ni que la herramienta "predice" el
+   precio. Si preguntan que tan buena es, cita la cobertura empirica y el QLIKE frente a
+   los baselines.
+3. NO inventes metricas ni datos que no esten arriba. Si no lo sabes, dilo.
+4. NO presentes la mediana de los caminos como un objetivo de precio.
+5. Si el usuario pregunta por otra configuracion, pidele que genere bandas con ella.
+6. Menciona la naturaleza informativa (no asesoria financiera) cuando la conversacion se
+   acerque a una decision de inversion.
+
+ESTILO: conciso, con los numeros reales de arriba, en el idioma del usuario."""
+
+
+def render_asistente():
+    st.markdown("### 🤖 Asistente")
+    st.caption("Explica bandas, volatilidad y dimensionamiento. No da dirección.")
+
+    if 'mensajes' not in st.session_state:
+        st.session_state.mensajes = []
+
+    contenedor = st.container(height=380)
+    with contenedor:
+        for m in st.session_state.mensajes:
+            with st.chat_message(m['role']):
+                st.markdown(m['content'])
+
+    pregunta = st.chat_input("Pregunta sobre las bandas...")
+
+    st.caption("**Preguntas rápidas**")
+    rapidas = [
+        ("📏 ¿Cómo dimensiono?", "Con el semiancho de la banda del día 1, ¿cómo calculo el "
+                                 "tamaño de posición si mi riesgo máximo por operación es 2% del capital?"),
+        ("🎯 ¿Dónde pongo el stop?", "Según la regla de stops fuera de la banda 95%, ¿qué niveles "
+                                     "se desprenden de las bandas de hoy?"),
+        ("📊 ¿Son confiables las bandas?", "¿Qué significa la cobertura medida y cómo debo "
+                                           "interpretarla al dimensionar?"),
+        ("⚠️ ¿Qué riesgos hay hoy?", "¿Cuáles son los principales riesgos según el régimen "
+                                     "actual y la volatilidad esperada?"),
+    ]
+    for etiqueta, texto in rapidas:
+        if st.button(etiqueta, use_container_width=True, key=f"q_{etiqueta}"):
+            pregunta = texto
+
+    if pregunta:
+        st.session_state.mensajes.append({'role': 'user', 'content': pregunta})
+        try:
+            from groq import Groq
+            api_key = ""
+            try:
+                api_key = st.secrets.get("GROQ_API_KEY", "")
+            except Exception:
+                pass
+            if not api_key:
+                api_key = os.environ.get("GROQ_API_KEY", "")
+            if not api_key:
+                st.error("⚠️ Falta GROQ_API_KEY en los secrets.")
+                st.stop()
+
+            cliente = Groq(api_key=api_key)
+            sistema = PROMPT_SISTEMA.format(contexto=construir_contexto())
+            resp = cliente.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "system", "content": sistema}] +
+                         [{"role": m['role'], "content": m['content']}
+                          for m in st.session_state.mensajes[-8:]],
+                temperature=0.3, max_tokens=800)
+            texto = resp.choices[0].message.content
+            st.session_state.mensajes.append({'role': 'assistant', 'content': texto})
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error del asistente: {type(e).__name__}: {e}")
+
+    if st.session_state.mensajes and st.button("🗑️ Limpiar conversación", use_container_width=True):
+        st.session_state.mensajes = []
+        st.rerun()
+
+    st.caption("*Powered by Groq (Llama 3.3)*")
+
 
 # ============================================================================
 # MAIN — se ejecuta al pulsar el botón
@@ -923,376 +1097,382 @@ if st.session_state.get('listo'):
     _cov = st.session_state['band_coverage']
     sig_path = st.session_state['sig_path']
 
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["📈 Bandas", "🔍 Regímenes", "📊 Calidad del modelo", "🩺 Track Record"])
+    col_main, col_chat = st.columns([3, 1])
 
-    # ------------------------------------------------------------------ TAB 1
-    with tab1:
-        st.subheader(f"Proyección a {days} días · {st.session_state['regime_label']}")
+    with col_chat:
+        render_asistente()
 
-        lo1, hi1 = forecast_df['Piso 95%'].iloc[0], forecast_df['Techo 95%'].iloc[0]
-        loN, hiN = forecast_df['Piso 95%'].iloc[-1], forecast_df['Techo 95%'].iloc[-1]
-        semi1 = (hi1 - lo1) / 2 / last_price * 100
+    with col_main:
+        tab1, tab2, tab3, tab4 = st.tabs(
+            ["📈 Bandas", "🔍 Regímenes", "📊 Calidad del modelo", "🩺 Track Record"])
 
-        c1, c2, c3, c4, c5 = st.columns(5)
-        with c1:
-            st.metric("Precio actual", f"${last_price:,.0f}",
-                      help="Último cierre diario confirmado.")
-        with c2:
-            st.metric("Vol esperada mañana", f"±{sig_path[0]*100:.2f}%",
-                      help="Volatilidad diaria que proyecta el HAR-RV para mañana. "
-                           "Es lo que este modelo sí sabe estimar.")
-        with c3:
-            st.metric("Banda 95% — Día 1", f"${lo1:,.0f} – ${hi1:,.0f}",
-                      f"semiancho ±{semi1:.1f}%", delta_color="off",
-                      help="Rango donde se espera el cierre de mañana con 95% de confianza.")
-        with c4:
-            st.metric(f"Banda 95% — Día {days}", f"${loN:,.0f} – ${hiN:,.0f}",
-                      f"ancho {(hiN-loN)/forecast_df['Referencia'].iloc[-1]*100:.1f}%",
-                      delta_color="off",
-                      help="El ancho crece con el horizonte: incertidumbre acumulada.")
-        with c5:
-            st.metric("Presupuesto de riesgo", f"±{semi1:.1f}%",
-                      f"cobertura medida: {_cov['coverage_pct']:.0f}%", delta_color="off",
-                      help="Tamaño de posición = riesgo_máximo / semiancho. "
-                           "Stops FUERA de la banda; targets DENTRO.")
+        # ------------------------------------------------------------------ TAB 1
+        with tab1:
+            st.subheader(f"Proyección a {days} días · {st.session_state['regime_label']}")
 
-        # --- gráfico ---
-        fig = go.Figure()
-        h_show = hist_regime.tail(60)
-        fig.add_trace(go.Scatter(x=h_show.index, y=h_show['close'], name='Histórico',
-                                 mode='lines', line=dict(color=COLOR_ACTUAL, width=2)))
-        if show_paths:
-            for i, p in enumerate(st.session_state['sample_paths']):
-                fig.add_trace(go.Scatter(x=forecast_df['Fecha'], y=p, mode='lines',
-                                         line=dict(color='rgba(245,160,90,0.13)', width=1),
-                                         showlegend=(i == 0), hoverinfo='skip',
-                                         name='Caminos simulados (muestra de 1.000)'))
-        fig.add_trace(go.Scatter(x=forecast_df['Fecha'], y=forecast_df['Techo 95%'],
-                                 name='Techo 95%', mode='lines+markers',
-                                 line=dict(color=COLOR_CI_BOOTSTRAP, width=3), marker=dict(size=6)))
-        fig.add_trace(go.Scatter(x=forecast_df['Fecha'], y=forecast_df['Piso 95%'],
-                                 name='Piso 95%', mode='lines+markers',
-                                 line=dict(color=COLOR_CI_BOOTSTRAP, width=3), marker=dict(size=6),
-                                 fill='tonexty', fillcolor=COLOR_CI_FILL))
-        fig.add_trace(go.Scatter(x=forecast_df['Fecha'], y=forecast_df['Referencia'],
-                                 name='Mediana de los caminos', mode='lines',
-                                 line=dict(color=COLOR_FORECAST, width=1, dash='dot'), opacity=.5))
-        fig.add_vline(x=hist_regime.index[-1], line=dict(color='#CC4444', dash='dash', width=2),
-                      annotation_text='Hoy (UTC)')
-        fig.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                          font=dict(color='#FFFFFF'), hovermode='x unified', height=470,
-                          margin=dict(l=60, r=20, t=30, b=50),
-                          xaxis=dict(title='Fecha', showgrid=False),
-                          yaxis=dict(title='Precio (USD)', showgrid=False, tickformat='$,.0f'),
-                          legend=dict(bgcolor='rgba(90,90,90,.8)'))
-        st.plotly_chart(fig, use_container_width=True)
+            lo1, hi1 = forecast_df['Piso 95%'].iloc[0], forecast_df['Techo 95%'].iloc[0]
+            loN, hiN = forecast_df['Piso 95%'].iloc[-1], forecast_df['Techo 95%'].iloc[-1]
+            semi1 = (hi1 - lo1) / 2 / last_price * 100
 
-        st.caption(
-            "Las líneas tenues son una muestra de los 1.000 caminos simulados que generan la "
-            "banda: cada uno es un futuro posible con volatilidad realista. La línea punteada es "
-            "su mediana, y sale suave por aritmética —los shocks se cancelan al agregar— no "
-            "porque el modelo suavice nada. **No es un objetivo de precio:** esta app no "
-            "pronostica dirección. El 95% de los caminos queda dentro de la banda.")
+            c1, c2, c3, c4, c5 = st.columns(5)
+            with c1:
+                st.metric("Precio actual", f"${last_price:,.0f}",
+                          help="Último cierre diario confirmado.")
+            with c2:
+                st.metric("Vol esperada mañana", f"±{sig_path[0]*100:.2f}%",
+                          help="Volatilidad diaria que proyecta el HAR-RV para mañana. "
+                               "Es lo que este modelo sí sabe estimar.")
+            with c3:
+                st.metric("Banda 95% — Día 1", f"${lo1:,.0f} – ${hi1:,.0f}",
+                          f"semiancho ±{semi1:.1f}%", delta_color="off",
+                          help="Rango donde se espera el cierre de mañana con 95% de confianza.")
+            with c4:
+                st.metric(f"Banda 95% — Día {days}", f"${loN:,.0f} – ${hiN:,.0f}",
+                          f"ancho {(hiN-loN)/forecast_df['Referencia'].iloc[-1]*100:.1f}%",
+                          delta_color="off",
+                          help="El ancho crece con el horizonte: incertidumbre acumulada.")
+            with c5:
+                st.metric("Presupuesto de riesgo", f"±{semi1:.1f}%",
+                          f"cobertura medida: {_cov['coverage_pct']:.0f}%", delta_color="off",
+                          help="Tamaño de posición = riesgo_máximo / semiancho. "
+                               "Stops FUERA de la banda; targets DENTRO.")
 
-        with st.expander("📖 Cómo usar estas bandas (5 reglas)", expanded=False):
+            # --- gráfico ---
+            fig = go.Figure()
+            h_show = hist_regime.tail(60)
+            fig.add_trace(go.Scatter(x=h_show.index, y=h_show['close'], name='Histórico',
+                                     mode='lines', line=dict(color=COLOR_ACTUAL, width=2)))
+            if show_paths:
+                for i, p in enumerate(st.session_state['sample_paths']):
+                    fig.add_trace(go.Scatter(x=forecast_df['Fecha'], y=p, mode='lines',
+                                             line=dict(color='rgba(245,160,90,0.13)', width=1),
+                                             showlegend=(i == 0), hoverinfo='skip',
+                                             name='Caminos simulados (muestra de 1.000)'))
+            fig.add_trace(go.Scatter(x=forecast_df['Fecha'], y=forecast_df['Techo 95%'],
+                                     name='Techo 95%', mode='lines+markers',
+                                     line=dict(color=COLOR_CI_BOOTSTRAP, width=3), marker=dict(size=6)))
+            fig.add_trace(go.Scatter(x=forecast_df['Fecha'], y=forecast_df['Piso 95%'],
+                                     name='Piso 95%', mode='lines+markers',
+                                     line=dict(color=COLOR_CI_BOOTSTRAP, width=3), marker=dict(size=6),
+                                     fill='tonexty', fillcolor=COLOR_CI_FILL))
+            fig.add_trace(go.Scatter(x=forecast_df['Fecha'], y=forecast_df['Referencia'],
+                                     name='Mediana de los caminos', mode='lines',
+                                     line=dict(color=COLOR_FORECAST, width=1, dash='dot'), opacity=.5))
+            fig.add_vline(x=hist_regime.index[-1], line=dict(color='#CC4444', dash='dash', width=2),
+                          annotation_text='Hoy (UTC)')
+            fig.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
+                              font=dict(color='#FFFFFF'), hovermode='x unified', height=470,
+                              margin=dict(l=60, r=20, t=30, b=50),
+                              xaxis=dict(title='Fecha', showgrid=False),
+                              yaxis=dict(title='Precio (USD)', showgrid=False, tickformat='$,.0f'),
+                              legend=dict(bgcolor='rgba(90,90,90,.8)'))
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.caption(
+                "Las líneas tenues son una muestra de los 1.000 caminos simulados que generan la "
+                "banda: cada uno es un futuro posible con volatilidad realista. La línea punteada es "
+                "su mediana, y sale suave por aritmética —los shocks se cancelan al agregar— no "
+                "porque el modelo suavice nada. **No es un objetivo de precio:** esta app no "
+                "pronostica dirección. El 95% de los caminos queda dentro de la banda.")
+
+            with st.expander("📖 Cómo usar estas bandas (5 reglas)", expanded=False):
+                st.markdown("""
+    <div style='background-color: #8B7BB5; padding: 15px; border-radius: 8px;'>
+
+    **1 · Banda = presupuesto de riesgo → dimensiona la posición**
+
+    _Tamaño ≈ riesgo_máximo / semiancho. Riesgo máximo 2% y semiancho ±4% → 0,5× tu tamaño estándar._
+
+    **2 · Stops FUERA de la banda 95%; targets DENTRO**
+
+    _Un stop dentro de la banda es ruido esperado: te sacará sin que ocurra nada informativo._
+
+    **3 · La vol esperada te dice cuánto encoger o ampliar**
+
+    _Cuando la vol proyectada sube, la banda se ensancha sola y tu tamaño debe bajar en proporción._
+
+    **4 · Esta herramienta no da dirección**
+
+    _Doce experimentos lo establecieron. Si operas, la tesis direccional debe venir de otro lado;
+    esto dimensiona el riesgo de esa tesis._
+
+    **5 · Cambio de régimen detectado = revisar posiciones, no abrir tamaño nuevo**
+
+    _Tras un quiebre estructural, bandas y cobertura se estiman sobre un mercado que ya cambió._
+
+    </div>
+                """, unsafe_allow_html=True)
+
+            # --- contexto técnico ---
+            _card = ("<div style='background-color:#3A3A3A;padding:12px;border-radius:8px;"
+                     "text-align:center;border-top:3px solid {c};min-height:118px;'>"
+                     "<p style='margin:0;font-size:12px;color:#999;'>{t}</p>"
+                     "<p style='margin:8px 0;font-size:20px;color:{c};font-weight:bold;'>{v}</p>"
+                     "<p style='margin:0;font-size:12px;color:#BBB;'>{d}</p></div>")
+            _rs = st.session_state.get('regime_stats', pd.DataFrame())
+            reg_tipo, reg_dias, reg_deriva = "—", 0, 0.0
+            if len(_rs):
+                mv = _rs['volatility_%'].median(); ult = _rs.iloc[-1]
+                reg_tipo = "estable" if ult['volatility_%'] <= mv else "volátil"
+                reg_dias, reg_deriva = int(ult['days']), float(ult['total_return_%'])
+
+            if show_technical:
+                st.markdown("---")
+                st.markdown("##### 🧭 Contexto Técnico (descriptivo)")
+                _c = hist['close']; _px = float(_c.iloc[-1])
+                ma20, ma50, ma200 = _c.rolling(20).mean(), _c.rolling(50).mean(), _c.rolling(200).mean()
+                def _dist(ma):
+                    v = ma.iloc[-1]
+                    return None if pd.isna(v) else (_px / float(v) - 1) * 100
+                _d = _c.diff()
+                _g = _d.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+                _l = (-_d.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+                rsi = float((100 - 100 / (1 + _g / _l.replace(0, np.nan))).iloc[-1])
+                macd = _c.ewm(span=12, adjust=False).mean() - _c.ewm(span=26, adjust=False).mean()
+                sig_l = macd.ewm(span=9, adjust=False).mean()
+                above = (macd > sig_l).astype(int)
+                cr = np.where((above.diff().fillna(0) != 0).values)[0]
+                dias_cruce = int(len(_c) - 1 - cr[-1]) if len(cr) else None
+                cprev = _c.shift(1)
+                tr = pd.concat([(hist['high'] - hist['low']), (hist['high'] - cprev).abs(),
+                                (hist['low'] - cprev).abs()], axis=1).max(axis=1)
+                atr = float(tr.ewm(alpha=1/14, adjust=False).mean().iloc[-1])
+                def _f(x): return "n/d" if x is None else f"{x:+.1f}%"
+                t1, t2, t3, t4 = st.columns(4)
+                with t1:
+                    st.markdown(_card.format(c="#8B7BB5", t="DISTANCIA A MEDIAS",
+                                             v=f"{_f(_dist(ma200))} vs MA200",
+                                             d=f"MA20: {_f(_dist(ma20))} · MA50: {_f(_dist(ma50))}"),
+                                unsafe_allow_html=True)
+                with t2:
+                    zona = "sobrecompra (>70)" if rsi > 70 else ("sobreventa (<30)" if rsi < 30
+                                                                else "zona neutra (30–70)")
+                    st.markdown(_card.format(c="#8B7BB5", t="RSI (14)", v=f"{rsi:.0f}", d=zona),
+                                unsafe_allow_html=True)
+                with t3:
+                    st.markdown(_card.format(c="#8B7BB5", t="MACD — DÍAS DESDE EL CRUCE",
+                                             v=f"día {dias_cruce}" if dias_cruce is not None else "n/d",
+                                             d="MACD sobre su señal" if above.iloc[-1] == 1
+                                               else "MACD bajo su señal"), unsafe_allow_html=True)
+                with t4:
+                    st.markdown(_card.format(c="#8B7BB5", t="ATR (14)", v=f"${atr:,.0f}",
+                                             d=f"{atr/_px*100:.1f}% del precio"), unsafe_allow_html=True)
+                with st.expander("📉 Ver gráfico con MA20 / MA50 / MA200"):
+                    w = hist.tail(365)
+                    fma = go.Figure()
+                    fma.add_trace(go.Scatter(x=w.index, y=w['close'], name='Precio',
+                                             line=dict(color=COLOR_ACTUAL, width=2)))
+                    for s_, n_, c_ in ((ma20, 'MA20', '#F5C9A8'), (ma50, 'MA50', '#F5A05A'),
+                                       (ma200, 'MA200', '#8B7BB5')):
+                        sv = s_.reindex(w.index)
+                        if sv.notna().any():
+                            fma.add_trace(go.Scatter(x=w.index, y=sv, name=n_,
+                                                     line=dict(color=c_, width=1.5)))
+                    fma.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
+                                      font=dict(color='#FFF'), height=400, hovermode='x unified',
+                                      margin=dict(l=60, r=20, t=20, b=50),
+                                      yaxis=dict(tickformat='$,.0f', showgrid=False),
+                                      xaxis=dict(showgrid=False))
+                    st.plotly_chart(fma, use_container_width=True)
+
+            # --- contexto de mercado ---
+            st.markdown("---")
+            st.markdown("##### 📊 Contexto de mercado (descriptivo)")
+            vol_reg = hist_regime['close'].pct_change().std() * 100
+            v1 = sig_path[0] * 100
+            etiqueta, color_v = (("baja", "#44FF44") if v1 < vol_reg * .8 else
+                                 ("alta", "#FF6B6B") if v1 > vol_reg * 1.25 else ("media", "#F5A05A"))
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                st.markdown(_card.format(c=color_v, t="VOL ESPERADA (DÍA 1)", v=etiqueta,
+                                         d=f"{v1:.2f}%/día · régimen {vol_reg:.2f}%/día"),
+                            unsafe_allow_html=True)
+            with m2:
+                st.markdown(_card.format(c="#44FF44" if reg_tipo == "estable" else "#F5A05A",
+                                         t="RÉGIMEN ACTUAL", v=reg_tipo,
+                                         d=f"{reg_dias} días de antigüedad"), unsafe_allow_html=True)
+            with m3:
+                st.markdown(_card.format(c="#44FF44" if reg_deriva >= 0 else "#FF6B6B",
+                                         t="DERIVA DEL RÉGIMEN", v=f"{reg_deriva:+.1f}%",
+                                         d=f"acumulada en {reg_dias} días"), unsafe_allow_html=True)
+            with m4:
+                st.markdown(_card.format(c="#8B7BB5", t="COBERTURA MEDIDA",
+                                         v=f"{_cov['coverage_pct']:.0f}%",
+                                         d=f"nominal 95% · {_cov['n_days']} días OOS"),
+                            unsafe_allow_html=True)
+
             st.markdown("""
-<div style='background-color: #8B7BB5; padding: 15px; border-radius: 8px;'>
-
-**1 · Banda = presupuesto de riesgo → dimensiona la posición**
-
-_Tamaño ≈ riesgo_máximo / semiancho. Riesgo máximo 2% y semiancho ±4% → 0,5× tu tamaño estándar._
-
-**2 · Stops FUERA de la banda 95%; targets DENTRO**
-
-_Un stop dentro de la banda es ruido esperado: te sacará sin que ocurra nada informativo._
-
-**3 · La vol esperada te dice cuánto encoger o ampliar**
-
-_Cuando la vol proyectada sube, la banda se ensancha sola y tu tamaño debe bajar en proporción._
-
-**4 · Esta herramienta no da dirección**
-
-_Doce experimentos lo establecieron. Si operas, la tesis direccional debe venir de otro lado;
-esto dimensiona el riesgo de esa tesis._
-
-**5 · Cambio de régimen detectado = revisar posiciones, no abrir tamaño nuevo**
-
-_Tras un quiebre estructural, bandas y cobertura se estiman sobre un mercado que ya cambió._
-
-</div>
+            <div style='background-color:#4A3A3A;padding:12px;border-radius:8px;
+                        border-left:4px solid #CC4444;margin-top:10px;'>
+                <p style='margin:0;font-size:13px;color:#D0D0D0;'>
+                    ⚠️ <strong>Solo con fines informativos — NO es asesoría financiera.</strong>
+                    Todos los paneles son observaciones cuantitativas descriptivas, no recomendaciones.
+                    El mercado cripto conlleva riesgo sustancial de pérdida.
+                </p>
+            </div>
             """, unsafe_allow_html=True)
 
-        # --- contexto técnico ---
-        _card = ("<div style='background-color:#3A3A3A;padding:12px;border-radius:8px;"
-                 "text-align:center;border-top:3px solid {c};min-height:118px;'>"
-                 "<p style='margin:0;font-size:12px;color:#999;'>{t}</p>"
-                 "<p style='margin:8px 0;font-size:20px;color:{c};font-weight:bold;'>{v}</p>"
-                 "<p style='margin:0;font-size:12px;color:#BBB;'>{d}</p></div>")
-        _rs = st.session_state.get('regime_stats', pd.DataFrame())
-        reg_tipo, reg_dias, reg_deriva = "—", 0, 0.0
-        if len(_rs):
-            mv = _rs['volatility_%'].median(); ult = _rs.iloc[-1]
-            reg_tipo = "estable" if ult['volatility_%'] <= mv else "volátil"
-            reg_dias, reg_deriva = int(ult['days']), float(ult['total_return_%'])
-
-        if show_technical:
             st.markdown("---")
-            st.markdown("##### 🧭 Contexto Técnico (descriptivo)")
-            _c = hist['close']; _px = float(_c.iloc[-1])
-            ma20, ma50, ma200 = _c.rolling(20).mean(), _c.rolling(50).mean(), _c.rolling(200).mean()
-            def _dist(ma):
-                v = ma.iloc[-1]
-                return None if pd.isna(v) else (_px / float(v) - 1) * 100
-            _d = _c.diff()
-            _g = _d.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
-            _l = (-_d.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
-            rsi = float((100 - 100 / (1 + _g / _l.replace(0, np.nan))).iloc[-1])
-            macd = _c.ewm(span=12, adjust=False).mean() - _c.ewm(span=26, adjust=False).mean()
-            sig_l = macd.ewm(span=9, adjust=False).mean()
-            above = (macd > sig_l).astype(int)
-            cr = np.where((above.diff().fillna(0) != 0).values)[0]
-            dias_cruce = int(len(_c) - 1 - cr[-1]) if len(cr) else None
-            cprev = _c.shift(1)
-            tr = pd.concat([(hist['high'] - hist['low']), (hist['high'] - cprev).abs(),
-                            (hist['low'] - cprev).abs()], axis=1).max(axis=1)
-            atr = float(tr.ewm(alpha=1/14, adjust=False).mean().iloc[-1])
-            def _f(x): return "n/d" if x is None else f"{x:+.1f}%"
-            t1, t2, t3, t4 = st.columns(4)
-            with t1:
-                st.markdown(_card.format(c="#8B7BB5", t="DISTANCIA A MEDIAS",
-                                         v=f"{_f(_dist(ma200))} vs MA200",
-                                         d=f"MA20: {_f(_dist(ma20))} · MA50: {_f(_dist(ma50))}"),
-                            unsafe_allow_html=True)
-            with t2:
-                zona = "sobrecompra (>70)" if rsi > 70 else ("sobreventa (<30)" if rsi < 30
-                                                            else "zona neutra (30–70)")
-                st.markdown(_card.format(c="#8B7BB5", t="RSI (14)", v=f"{rsi:.0f}", d=zona),
-                            unsafe_allow_html=True)
-            with t3:
-                st.markdown(_card.format(c="#8B7BB5", t="MACD — DÍAS DESDE EL CRUCE",
-                                         v=f"día {dias_cruce}" if dias_cruce is not None else "n/d",
-                                         d="MACD sobre su señal" if above.iloc[-1] == 1
-                                           else "MACD bajo su señal"), unsafe_allow_html=True)
-            with t4:
-                st.markdown(_card.format(c="#8B7BB5", t="ATR (14)", v=f"${atr:,.0f}",
-                                         d=f"{atr/_px*100:.1f}% del precio"), unsafe_allow_html=True)
-            with st.expander("📉 Ver gráfico con MA20 / MA50 / MA200"):
-                w = hist.tail(365)
-                fma = go.Figure()
-                fma.add_trace(go.Scatter(x=w.index, y=w['close'], name='Precio',
-                                         line=dict(color=COLOR_ACTUAL, width=2)))
-                for s_, n_, c_ in ((ma20, 'MA20', '#F5C9A8'), (ma50, 'MA50', '#F5A05A'),
-                                   (ma200, 'MA200', '#8B7BB5')):
-                    sv = s_.reindex(w.index)
-                    if sv.notna().any():
-                        fma.add_trace(go.Scatter(x=w.index, y=sv, name=n_,
-                                                 line=dict(color=c_, width=1.5)))
-                fma.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                                  font=dict(color='#FFF'), height=400, hovermode='x unified',
-                                  margin=dict(l=60, r=20, t=20, b=50),
-                                  yaxis=dict(tickformat='$,.0f', showgrid=False),
-                                  xaxis=dict(showgrid=False))
-                st.plotly_chart(fma, use_container_width=True)
+            st.markdown("##### Tabla detallada")
+            tdf = forecast_df.copy()
+            tdf['Fecha'] = tdf['Fecha'].dt.strftime('%Y-%m-%d')
+            for c in ('Referencia', 'Piso 95%', 'Techo 95%'):
+                tdf[c] = tdf[c].apply(lambda x: f"${x:,.0f}")
+            tdf['Ancho %'] = tdf['Ancho %'].apply(lambda x: f"{x:.1f}%")
+            tdf['Vol esperada %'] = tdf['Vol esperada %'].apply(lambda x: f"{x:.2f}%")
+            st.dataframe(tdf, use_container_width=True, hide_index=True)
 
-        # --- contexto de mercado ---
-        st.markdown("---")
-        st.markdown("##### 📊 Contexto de mercado (descriptivo)")
-        vol_reg = hist_regime['close'].pct_change().std() * 100
-        v1 = sig_path[0] * 100
-        etiqueta, color_v = (("baja", "#44FF44") if v1 < vol_reg * .8 else
-                             ("alta", "#FF6B6B") if v1 > vol_reg * 1.25 else ("media", "#F5A05A"))
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            st.markdown(_card.format(c=color_v, t="VOL ESPERADA (DÍA 1)", v=etiqueta,
-                                     d=f"{v1:.2f}%/día · régimen {vol_reg:.2f}%/día"),
-                        unsafe_allow_html=True)
-        with m2:
-            st.markdown(_card.format(c="#44FF44" if reg_tipo == "estable" else "#F5A05A",
-                                     t="RÉGIMEN ACTUAL", v=reg_tipo,
-                                     d=f"{reg_dias} días de antigüedad"), unsafe_allow_html=True)
-        with m3:
-            st.markdown(_card.format(c="#44FF44" if reg_deriva >= 0 else "#FF6B6B",
-                                     t="DERIVA DEL RÉGIMEN", v=f"{reg_deriva:+.1f}%",
-                                     d=f"acumulada en {reg_dias} días"), unsafe_allow_html=True)
-        with m4:
-            st.markdown(_card.format(c="#8B7BB5", t="COBERTURA MEDIDA",
-                                     v=f"{_cov['coverage_pct']:.0f}%",
-                                     d=f"nominal 95% · {_cov['n_days']} días OOS"),
-                        unsafe_allow_html=True)
+        # ------------------------------------------------------------------ TAB 2
+        with tab2:
+            st.subheader("Detección de regímenes")
+            rs = st.session_state.get('regime_stats', pd.DataFrame())
+            if len(rs):
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("Regímenes detectados", len(rs))
+                with c2:
+                    st.metric("Antigüedad del actual", f"{int(rs.iloc[-1]['days'])} días")
+                with c3:
+                    st.metric("Deriva del régimen actual", f"{float(rs.iloc[-1]['total_return_%']):+.1f}%",
+                              delta_color="off",
+                              help="Retorno acumulado dentro del régimen vigente. Describe lo que YA "
+                                   "ocurrió; no es una proyección.")
+                figr = go.Figure()
+                figr.add_trace(go.Scatter(x=hist.index, y=hist['close'], name='BTC',
+                                          line=dict(color=COLOR_ACTUAL, width=1.5)))
+                for bp in st.session_state['breakpoints'][:-1]:
+                    figr.add_vline(x=hist.index[min(bp, len(hist) - 1)],
+                                   line=dict(color='#F5A05A', dash='dash', width=1))
+                figr.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
+                                   font=dict(color='#FFF'), height=420, hovermode='x unified',
+                                   margin=dict(l=60, r=20, t=20, b=50),
+                                   yaxis=dict(tickformat='$,.0f', showgrid=False),
+                                   xaxis=dict(showgrid=False))
+                st.plotly_chart(figr, use_container_width=True)
+                st.dataframe(rs, use_container_width=True, hide_index=True)
+                st.caption("Los quiebres se detectan con PELT sobre la serie de precios. "
+                           "Un cambio de régimen es motivo para revisar posiciones abiertas, "
+                           "no para abrir tamaño nuevo (regla 5).")
 
-        st.markdown("""
-        <div style='background-color:#4A3A3A;padding:12px;border-radius:8px;
-                    border-left:4px solid #CC4444;margin-top:10px;'>
-            <p style='margin:0;font-size:13px;color:#D0D0D0;'>
-                ⚠️ <strong>Solo con fines informativos — NO es asesoría financiera.</strong>
-                Todos los paneles son observaciones cuantitativas descriptivas, no recomendaciones.
-                El mercado cripto conlleva riesgo sustancial de pérdida.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
+        # ------------------------------------------------------------------ TAB 3
+        with tab3:
+            st.subheader("Calidad del modelo")
+            st.caption("La pregunta no es si la app acierta el precio —no lo intenta— sino si el "
+                       "RANGO que publica es confiable y si el modelo de volatilidad supera a "
+                       "alternativas más simples.")
 
-        st.markdown("---")
-        st.markdown("##### Tabla detallada")
-        tdf = forecast_df.copy()
-        tdf['Fecha'] = tdf['Fecha'].dt.strftime('%Y-%m-%d')
-        for c in ('Referencia', 'Piso 95%', 'Techo 95%'):
-            tdf[c] = tdf[c].apply(lambda x: f"${x:,.0f}")
-        tdf['Ancho %'] = tdf['Ancho %'].apply(lambda x: f"{x:.1f}%")
-        tdf['Vol esperada %'] = tdf['Vol esperada %'].apply(lambda x: f"{x:.2f}%")
-        st.dataframe(tdf, use_container_width=True, hide_index=True)
+            q1, q2, q3 = st.columns(3)
+            with q1:
+                st.metric("⭐ Cobertura banda 95%", f"{_cov['coverage_pct']:.0f}%",
+                          f"n = {_cov['n_days']} días OOS", delta_color="off",
+                          help="Porcentaje de cierres reales dentro de la banda 95% out-of-sample. "
+                               "Es LA métrica del producto.")
+            with q2:
+                st.metric("Cobertura banda 68%", f"{_cov['coverage_68_pct']:.0f}%",
+                          "nominal: 68%", delta_color="off",
+                          help="Dos niveles dicen más que uno: si el 95% cubre pero el 68% no, "
+                               "la forma de la distribución está mal aunque las colas acierten.")
+            with q3:
+                cal = st.session_state['calidad']
+                st.metric("Motor ganador (QLIKE)", cal.iloc[0]['modelo'],
+                          f"QLIKE {cal.iloc[0]['QLIKE']:.4f}", delta_color="off",
+                          help="QLIKE penaliza más subestimar la volatilidad, que es el error caro "
+                               "cuando la banda es un presupuesto de riesgo.")
 
-    # ------------------------------------------------------------------ TAB 2
-    with tab2:
-        st.subheader("Detección de regímenes")
-        rs = st.session_state.get('regime_stats', pd.DataFrame())
-        if len(rs):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("Regímenes detectados", len(rs))
-            with c2:
-                st.metric("Antigüedad del actual", f"{int(rs.iloc[-1]['days'])} días")
-            with c3:
-                st.metric("Deriva del régimen actual", f"{float(rs.iloc[-1]['total_return_%']):+.1f}%",
-                          delta_color="off",
-                          help="Retorno acumulado dentro del régimen vigente. Describe lo que YA "
-                               "ocurrió; no es una proyección.")
-            figr = go.Figure()
-            figr.add_trace(go.Scatter(x=hist.index, y=hist['close'], name='BTC',
+            c = _cov['coverage_pct']
+            if abs(c - 95) <= 4:
+                st.success(f"✅ Bandas confiables: {c:.0f}% de los cierres dentro de la banda 95%.")
+            elif 88 <= c <= 99:
+                st.warning(f"⚠️ Cobertura {c:.0f}%: usable con margen. Amplía el semiancho ~1,2× "
+                           "al dimensionar hasta tener cobertura viva.")
+            else:
+                st.error(f"❌ Cobertura {c:.0f}%: la banda no representa lo que anuncia.")
+
+            st.markdown("##### HAR-RV frente a alternativas más simples")
+            st.dataframe(st.session_state['calidad'], use_container_width=True, hide_index=True)
+            st.caption("Si la persistencia o el EWMA ganaran de forma sostenida, HAR-RV sobraría — "
+                       "el mismo criterio de parsimonia que retiró a XGBoost de esta app.")
+
+            st.markdown("##### Volatilidad estimada vs. realizada (validación)")
+            figv = go.Figure()
+            figv.add_trace(go.Scatter(x=st.session_state['val_dates'],
+                                      y=st.session_state['val_real'] * 100,
+                                      name='Volatilidad realizada', mode='lines',
                                       line=dict(color=COLOR_ACTUAL, width=1.5)))
-            for bp in st.session_state['breakpoints'][:-1]:
-                figr.add_vline(x=hist.index[min(bp, len(hist) - 1)],
-                               line=dict(color='#F5A05A', dash='dash', width=1))
-            figr.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                               font=dict(color='#FFF'), height=420, hovermode='x unified',
+            figv.add_trace(go.Scatter(x=st.session_state['val_dates'],
+                                      y=st.session_state['val_pred'] * 100,
+                                      name='HAR-RV', mode='lines',
+                                      line=dict(color=COLOR_FORECAST, width=2)))
+            figv.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
+                               font=dict(color='#FFF'), height=380, hovermode='x unified',
                                margin=dict(l=60, r=20, t=20, b=50),
-                               yaxis=dict(tickformat='$,.0f', showgrid=False),
+                               yaxis=dict(title='vol diaria (%)', showgrid=False),
                                xaxis=dict(showgrid=False))
-            st.plotly_chart(figr, use_container_width=True)
-            st.dataframe(rs, use_container_width=True, hide_index=True)
-            st.caption("Los quiebres se detectan con PELT sobre la serie de precios. "
-                       "Un cambio de régimen es motivo para revisar posiciones abiertas, "
-                       "no para abrir tamaño nuevo (regla 5).")
+            st.plotly_chart(figv, use_container_width=True)
+            st.caption("Aquí la línea SÍ debe seguir a la realidad: la volatilidad, a diferencia de "
+                       "la dirección, es predecible. Ese contraste resume por qué este producto "
+                       "existe y por qué no promete dirección.")
 
-    # ------------------------------------------------------------------ TAB 3
-    with tab3:
-        st.subheader("Calidad del modelo")
-        st.caption("La pregunta no es si la app acierta el precio —no lo intenta— sino si el "
-                   "RANGO que publica es confiable y si el modelo de volatilidad supera a "
-                   "alternativas más simples.")
+            coef = st.session_state['har_coef']
+            st.markdown("##### El modelo completo, en una ecuación")
+            st.latex(r"RV_{t+1} = %.5f + %.3f\,RV_t + %.3f\,\overline{RV}_{5} + %.3f\,\overline{RV}_{22}"
+                     % (coef[0], coef[1], coef[2], coef[3]))
+            st.caption("Cuatro parámetros, ajustados por mínimos cuadrados. Auditable a simple vista: "
+                       "no hay hiperparámetros, ni búsqueda, ni posibilidad de sobreajuste relevante.")
 
-        q1, q2, q3 = st.columns(3)
-        with q1:
-            st.metric("⭐ Cobertura banda 95%", f"{_cov['coverage_pct']:.0f}%",
-                      f"n = {_cov['n_days']} días OOS", delta_color="off",
-                      help="Porcentaje de cierres reales dentro de la banda 95% out-of-sample. "
-                           "Es LA métrica del producto.")
-        with q2:
-            st.metric("Cobertura banda 68%", f"{_cov['coverage_68_pct']:.0f}%",
-                      "nominal: 68%", delta_color="off",
-                      help="Dos niveles dicen más que uno: si el 95% cubre pero el 68% no, "
-                           "la forma de la distribución está mal aunque las colas acierten.")
-        with q3:
-            cal = st.session_state['calidad']
-            st.metric("Motor ganador (QLIKE)", cal.iloc[0]['modelo'],
-                      f"QLIKE {cal.iloc[0]['QLIKE']:.4f}", delta_color="off",
-                      help="QLIKE penaliza más subestimar la volatilidad, que es el error caro "
-                           "cuando la banda es un presupuesto de riesgo.")
-
-        c = _cov['coverage_pct']
-        if abs(c - 95) <= 4:
-            st.success(f"✅ Bandas confiables: {c:.0f}% de los cierres dentro de la banda 95%.")
-        elif 88 <= c <= 99:
-            st.warning(f"⚠️ Cobertura {c:.0f}%: usable con margen. Amplía el semiancho ~1,2× "
-                       "al dimensionar hasta tener cobertura viva.")
-        else:
-            st.error(f"❌ Cobertura {c:.0f}%: la banda no representa lo que anuncia.")
-
-        st.markdown("##### HAR-RV frente a alternativas más simples")
-        st.dataframe(st.session_state['calidad'], use_container_width=True, hide_index=True)
-        st.caption("Si la persistencia o el EWMA ganaran de forma sostenida, HAR-RV sobraría — "
-                   "el mismo criterio de parsimonia que retiró a XGBoost de esta app.")
-
-        st.markdown("##### Volatilidad estimada vs. realizada (validación)")
-        figv = go.Figure()
-        figv.add_trace(go.Scatter(x=st.session_state['val_dates'],
-                                  y=st.session_state['val_real'] * 100,
-                                  name='Volatilidad realizada', mode='lines',
-                                  line=dict(color=COLOR_ACTUAL, width=1.5)))
-        figv.add_trace(go.Scatter(x=st.session_state['val_dates'],
-                                  y=st.session_state['val_pred'] * 100,
-                                  name='HAR-RV', mode='lines',
-                                  line=dict(color=COLOR_FORECAST, width=2)))
-        figv.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                           font=dict(color='#FFF'), height=380, hovermode='x unified',
-                           margin=dict(l=60, r=20, t=20, b=50),
-                           yaxis=dict(title='vol diaria (%)', showgrid=False),
-                           xaxis=dict(showgrid=False))
-        st.plotly_chart(figv, use_container_width=True)
-        st.caption("Aquí la línea SÍ debe seguir a la realidad: la volatilidad, a diferencia de "
-                   "la dirección, es predecible. Ese contraste resume por qué este producto "
-                   "existe y por qué no promete dirección.")
-
-        coef = st.session_state['har_coef']
-        st.markdown("##### El modelo completo, en una ecuación")
-        st.latex(r"RV_{t+1} = %.5f + %.3f\,RV_t + %.3f\,\overline{RV}_{5} + %.3f\,\overline{RV}_{22}"
-                 % (coef[0], coef[1], coef[2], coef[3]))
-        st.caption("Cuatro parámetros, ajustados por mínimos cuadrados. Auditable a simple vista: "
-                   "no hay hiperparámetros, ni búsqueda, ni posibilidad de sobreajuste relevante.")
-
-    # ------------------------------------------------------------------ TAB 4
-    with tab4:
-        st.subheader("Track Record / Model Health")
-        st.caption("Lo escribe monitor.py cada madrugada vía GitHub Actions. Cada fila queda con "
-                   "un commit de fecha inmutable: el historial del archivo en el repo ES la "
-                   "prueba auditable del track record.")
-        try:
-            hl = pd.read_csv('monitoring/health_log.csv', parse_dates=['fecha']).sort_values('fecha')
-        except Exception:
-            hl = None
-        if hl is None or len(hl) == 0:
-            st.info("📭 **El monitor aún no ha escrito historial.**\n\n"
-                    "Este tab se llena cuando `monitor.py` corra en GitHub Actions y haga commit "
-                    "de `monitoring/health_log.csv`. Hasta entonces, la cobertura que ves en "
-                    "'Calidad del modelo' es una estimación out-of-sample sobre la validación, "
-                    "no track record en vivo — y así está etiquetada.")
-        else:
-            k1, k2, k3 = st.columns(3)
-            with k1:
-                st.metric("Días monitoreados", len(hl))
-            with k2:
-                cacc = hl['dentro_banda_95'].mean() * 100 if 'dentro_banda_95' in hl else None
-                st.metric("Cobertura acumulada", f"{cacc:.0f}%" if cacc is not None else "n/d",
-                          delta_color="off")
-            with k3:
-                c90 = (hl['cobertura_rodante_90d'].dropna().iloc[-1]
-                       if 'cobertura_rodante_90d' in hl and hl['cobertura_rodante_90d'].notna().any()
-                       else None)
-                st.metric("Cobertura rodante 90d", f"{c90:.0f}%" if c90 is not None else "n/d",
-                          "alerta si <88%", delta_color="off")
-            p = hl.tail(120)
-            figt = go.Figure()
-            if {'banda_lo_95', 'banda_hi_95'}.issubset(p.columns):
-                figt.add_trace(go.Scatter(x=p['fecha'], y=p['banda_hi_95'], name='Techo emitido',
-                                          line=dict(color=COLOR_CI_BOOTSTRAP, width=2)))
-                figt.add_trace(go.Scatter(x=p['fecha'], y=p['banda_lo_95'], name='Piso emitido',
-                                          line=dict(color=COLOR_CI_BOOTSTRAP, width=2),
-                                          fill='tonexty', fillcolor=COLOR_CI_FILL))
-            figt.add_trace(go.Scatter(x=p['fecha'], y=p['cierre'], name='Cierre real',
-                                      line=dict(color=COLOR_ACTUAL, width=2)))
-            if 'dentro_banda_95' in p.columns:
-                out = p[~p['dentro_banda_95'].astype(bool)]
-                if len(out):
-                    figt.add_trace(go.Scatter(x=out['fecha'], y=out['cierre'], mode='markers',
-                                              name='Fuera de banda',
-                                              marker=dict(color='#FF4444', size=9, symbol='x')))
-            figt.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                               font=dict(color='#FFF'), height=420, hovermode='x unified',
-                               margin=dict(l=60, r=20, t=20, b=50),
-                               yaxis=dict(tickformat='$,.0f', showgrid=False),
-                               xaxis=dict(showgrid=False))
-            st.plotly_chart(figt, use_container_width=True)
-            st.dataframe(hl.tail(15).iloc[::-1], use_container_width=True, hide_index=True)
+        # ------------------------------------------------------------------ TAB 4
+        with tab4:
+            st.subheader("Track Record / Model Health")
+            st.caption("Lo escribe monitor.py cada madrugada vía GitHub Actions. Cada fila queda con "
+                       "un commit de fecha inmutable: el historial del archivo en el repo ES la "
+                       "prueba auditable del track record.")
+            try:
+                hl = pd.read_csv('monitoring/health_log.csv', parse_dates=['fecha']).sort_values('fecha')
+            except Exception:
+                hl = None
+            if hl is None or len(hl) == 0:
+                st.info("📭 **El monitor aún no ha escrito historial.**\n\n"
+                        "Este tab se llena cuando `monitor.py` corra en GitHub Actions y haga commit "
+                        "de `monitoring/health_log.csv`. Hasta entonces, la cobertura que ves en "
+                        "'Calidad del modelo' es una estimación out-of-sample sobre la validación, "
+                        "no track record en vivo — y así está etiquetada.")
+            else:
+                k1, k2, k3 = st.columns(3)
+                with k1:
+                    st.metric("Días monitoreados", len(hl))
+                with k2:
+                    cacc = hl['dentro_banda_95'].mean() * 100 if 'dentro_banda_95' in hl else None
+                    st.metric("Cobertura acumulada", f"{cacc:.0f}%" if cacc is not None else "n/d",
+                              delta_color="off")
+                with k3:
+                    c90 = (hl['cobertura_rodante_90d'].dropna().iloc[-1]
+                           if 'cobertura_rodante_90d' in hl and hl['cobertura_rodante_90d'].notna().any()
+                           else None)
+                    st.metric("Cobertura rodante 90d", f"{c90:.0f}%" if c90 is not None else "n/d",
+                              "alerta si <88%", delta_color="off")
+                p = hl.tail(120)
+                figt = go.Figure()
+                if {'banda_lo_95', 'banda_hi_95'}.issubset(p.columns):
+                    figt.add_trace(go.Scatter(x=p['fecha'], y=p['banda_hi_95'], name='Techo emitido',
+                                              line=dict(color=COLOR_CI_BOOTSTRAP, width=2)))
+                    figt.add_trace(go.Scatter(x=p['fecha'], y=p['banda_lo_95'], name='Piso emitido',
+                                              line=dict(color=COLOR_CI_BOOTSTRAP, width=2),
+                                              fill='tonexty', fillcolor=COLOR_CI_FILL))
+                figt.add_trace(go.Scatter(x=p['fecha'], y=p['cierre'], name='Cierre real',
+                                          line=dict(color=COLOR_ACTUAL, width=2)))
+                if 'dentro_banda_95' in p.columns:
+                    out = p[~p['dentro_banda_95'].astype(bool)]
+                    if len(out):
+                        figt.add_trace(go.Scatter(x=out['fecha'], y=out['cierre'], mode='markers',
+                                                  name='Fuera de banda',
+                                                  marker=dict(color='#FF4444', size=9, symbol='x')))
+                figt.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
+                                   font=dict(color='#FFF'), height=420, hovermode='x unified',
+                                   margin=dict(l=60, r=20, t=20, b=50),
+                                   yaxis=dict(tickformat='$,.0f', showgrid=False),
+                                   xaxis=dict(showgrid=False))
+                st.plotly_chart(figt, use_container_width=True)
+                st.dataframe(hl.tail(15).iloc[::-1], use_container_width=True, hide_index=True)
 
 else:
     st.markdown("""

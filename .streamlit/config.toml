@@ -1,0 +1,20 @@
+# Streamlit Configuration — BTC Risk Bands
+# Tema identico al de la version XGBoost: misma identidad visual de Hinds-Analytics.
+# NOTA: este archivo SI se commitea (no contiene secretos). El que se ignora es
+# .streamlit/secrets.toml, que es donde van las credenciales.
+
+[theme]
+primaryColor = "#F5A05A"
+backgroundColor = "#4A4A4A"
+secondaryBackgroundColor = "#5A5A5A"
+textColor = "#FFFFFF"
+font = "sans serif"
+
+[server]
+headless = true
+port = 8501
+enableCORS = false
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false

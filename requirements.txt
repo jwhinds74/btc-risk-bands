@@ -6,3 +6,4 @@ plotly
 ruptures
 requests
 pyyaml
+groq
