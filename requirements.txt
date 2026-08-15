@@ -1,0 +1,8 @@
+streamlit==1.61.1
+streamlit-authenticator==0.2.3
+pandas<3
+numpy<3
+plotly
+ruptures
+requests
+pyyaml

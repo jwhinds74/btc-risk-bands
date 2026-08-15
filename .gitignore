@@ -1,0 +1,6 @@
+cc_key.txt
+.streamlit/secrets.toml
+*.env
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
