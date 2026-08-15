@@ -1,0 +1,2 @@
+fecha,cierre,dentro_banda_95,sigma_emitida,error_vol_%,cobertura_rodante_90d,error_vol_medio_90d,error_vol_abs_90d,regimen_actual,regimen_cambio,ks_drift_pvalue,banda_lo_95,banda_hi_95,sigma_hoy,banda_lo_95_hoy,banda_hi_95_hoy,fuente
+2026-08-14,62983.61,,,,,,,estable(195d),False,0.0,,,0.014201,61281.81,64782.06,CryptoCompare
