@@ -1152,7 +1152,10 @@ if run_forecast:
 # ============================================================================
 # TABS
 # ============================================================================
-if st.session_state.get('listo'):
+_CLAVES = ('forecast_df', 'last_price', 'days', 'hist', 'hist_regime',
+           'band_coverage', 'sig_path', 'sample_paths', 'calidad', 'har_coef')
+
+if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES):
     forecast_df = st.session_state['forecast_df']
     last_price = st.session_state['last_price']
     days = st.session_state['days']
@@ -1539,6 +1542,12 @@ if st.session_state.get('listo'):
                 st.dataframe(hl.tail(15).iloc[::-1], use_container_width=True, hide_index=True)
 
 else:
+    if st.session_state.get('listo'):
+        # Estado inconsistente (p. ej. tras un redespliegue): se descarta.
+        st.session_state['listo'] = False
+        st.info("La sesión se reinició tras una actualización de la app. "
+                "Pulsa **Generar bandas** para recalcular.")
+
     st.markdown("""
     ### Qué hace esta herramienta
 
