@@ -325,15 +325,16 @@ st.markdown("""
     
     h1, h2, h3 { color: #FFFFFF !important; }
     
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab-list"] { gap: 14px; }
     
     .stTabs [data-baseweb="tab"] {
         background-color: #5A5A5A;
-        border-radius: 4px;
-        padding: 12px 20px;
+        border-radius: 6px;
+        padding: 14px 34px;          /* mas aire: los titulos no rozan el borde */
         color: #E0E0E0;
         font-size: 16px !important;
         font-weight: 600;
+        letter-spacing: .2px;
     }
     
     .stTabs [aria-selected="true"] {
@@ -706,36 +707,87 @@ def qlike(y, f):
 # ============================================================================
 # HEADER
 # ============================================================================
-col_logo, col_title = st.columns([1, 5])
-with col_logo:
-    _logo = None
-    for _p in ("assets/LOGO HindsAnalytics v2026.png", "assets/XGBit_Logo.JPG"):
-        if os.path.exists(_p):
-            _logo = _p
-            break
-    if _logo:
-        st.image(_logo, width=120)
-    else:
-        st.markdown("<div style='font-size:56px'>📊</div>", unsafe_allow_html=True)
-with col_title:
+header_col1, header_col2 = st.columns([4, 1])
+
+with header_col1:
     st.markdown("""
     <div style='padding: 0; margin-bottom: 0;'>
-        <p style='margin: 0 0 8px 0; font-size: 56px; font-weight: 780; color: #F5A05A;'>BTC Risk Bands</p>
-        <h1 style='margin: 0 0 5px 0; font-size: 34px; font-weight: 700;'>Bandas de riesgo, volatilidad y regímenes</h1>
-        <p style='margin: 0 0 0 0; font-size: 17px; line-height: 1.5; color: #E0E0E0;'>
-            Motor <strong>HAR-RV</strong>: cuatro parámetros, sin machine learning.
-            Rango probable del precio con cobertura medida y track record auditable.<br>
-            <em style='font-size: 17px;'>Powered by Hinds Analytics</em>
-        </p>
-        <p style='margin: 10px 0 0 0; font-size: 13px; color: #E0B0B0; background-color: #4A3A3A;
-                  padding: 8px 12px; border-radius: 6px; border-left: 3px solid #CC4444;'>
-            ⚠️ Herramienta de análisis cuantitativo con fines informativos. No constituye asesoría
-            financiera. Esta app <strong>no pronostica dirección</strong>: doce experimentos con
-            protocolo anti-sesgo mostraron que el precio diario de BTC no es direccionalmente
-            predecible. Lo que sí mide, y publica con cobertura verificable, es el <strong>rango</strong>.
+        <p style='margin: 0 0 4px 0; font-size: 56px; font-weight: 780; color: #F5A05A;
+                  line-height: 1.05;'>XGBit</p>
+        <p style='margin: 0 0 14px 0; font-size: 26px; font-weight: 600; color: #F5C9A8;
+                  letter-spacing: .5px;'>Volatility Radar App</p>
+        <div style='font-size: 18px; line-height: 1.75; color: #E0E0E0;'>
+            <p style='margin: 0;'>▸ Anticipa cuánto puede moverse el Bitcoin</p>
+            <p style='margin: 0;'>▸ Encuentra los rangos probables y regímenes del mercado</p>
+            <p style='margin: 0;'>▸ Determina cuánto arriesgar en cada posición</p>
+        </div>
+        <p style='margin: 12px 0 0 0; font-size: 15px; color: #BFC7D0;'>
+            <em>Powered by Hinds Analytics</em>
         </p>
     </div>
     """, unsafe_allow_html=True)
+
+with header_col2:
+    _logo_app = None
+    for _p in ("assets/XGBit_Logo.JPG", "assets/XGBit_Logo.jpg", "assets/XGBit_Logo.png"):
+        if os.path.exists(_p):
+            _logo_app = _p
+            break
+    if _logo_app:
+        st.image(_logo_app, width=180)
+
+# ---------------------------------------------------------------------------
+# Narrativa en desplegable: la informacion densa no debe abrumar de entrada,
+# pero tiene que estar disponible para quien la busque (patron de la ficha
+# tecnica plegable). Sintetiza motor + limitaciones en un solo lugar.
+# ---------------------------------------------------------------------------
+with st.expander("🎯  Qué mide esta app y por qué puedes confiar en el número", expanded=False):
+    st.markdown("""
+<div style='background-color: #8B7BB5; padding: 18px 22px; border-radius: 8px;'>
+
+**El precio de mañana no se puede predecir. Cuánto puede moverse, sí.**
+
+Esa distinción es todo el producto. XGBit no adivina hacia dónde va Bitcoin: calcula
+**hasta dónde puede llegar** y con qué probabilidad, que es la información que
+realmente permite dimensionar una posición y colocar un stop donde no lo barra el ruido.
+
+**El motor: memoria de la volatilidad a tres escalas**
+
+Bajo el capó hay un modelo *heterogéneo de volatilidad realizada*. Parte de un hecho
+observable en todos los mercados: la volatilidad se contagia entre operadores de
+horizontes distintos. Lo que hizo el intradiario ayer, lo que hizo el swing la semana
+pasada y lo que hizo el institucional el último mes dejan huellas diferentes, y las tres
+juntas explican la agitación de mañana mejor que cualquiera por separado.
+
+El modelo combina esas tres memorias — **día, semana y mes** — en una estimación de
+cuánta energía traerá la sesión siguiente. De ahí sale el ancho de la banda: se estrecha
+cuando el mercado se calma y se abre cuando se tensa, sin que nadie mueva una perilla.
+
+**Por qué esta arquitectura y no otra**
+
+Llegamos aquí después de doce experimentos con protocolo anti-sesgo: holdout bloqueado,
+detección automática de fuga de información, validación walk-forward con costos reales y
+comparación obligatoria contra alternativas más simples. Se probaron modelos de machine
+learning con búsqueda de hiperparámetros, calibración de probabilidades y horizontes
+intradiarios.
+
+El veredicto fue nítido: para **dirección**, ningún modelo superó a la referencia trivial.
+Para **volatilidad**, esta arquitectura ganó — y lo hizo con cuatro parámetros, sin nada
+que ajustar a mano y sin espacio para sobreajustar. Esa experimentación es la razón por la
+que hoy sabes exactamente qué esperar de cada número en pantalla.
+
+**La diferencia que puedes verificar**
+
+Cada banda emitida se registra con fecha inmutable y se compara al día siguiente contra
+el cierre real. La pestaña *Track Record* publica ese historial. No prometemos precisión:
+la medimos y la enseñamos, acierte o falle.
+
+</div>
+    """, unsafe_allow_html=True)
+
+st.caption("⚠️ Herramienta de análisis cuantitativo con fines informativos. No constituye "
+           "asesoría financiera ni recomendación de compra o venta. El mercado cripto "
+           "conlleva riesgo sustancial de pérdida.")
 
 st.markdown("---")
 
@@ -743,6 +795,18 @@ st.markdown("---")
 # SIDEBAR
 # ============================================================================
 with st.sidebar:
+    _logo_inst = None
+    for _p in ("assets/LOGO HindsAnalytics v2026.png", "assets/logo_hinds.png",
+               "assets/LOGO_HindsAnalytics.png"):
+        if os.path.exists(_p):
+            _logo_inst = _p
+            break
+    if _logo_inst:
+        _l1, _l2, _l3 = st.columns([1, 3, 1])
+        with _l2:
+            st.image(_logo_inst, width=140)
+        st.markdown("<div style='margin-bottom:10px'></div>", unsafe_allow_html=True)
+
     st.header("⚙️ Configuración")
 
     days = st.slider("Días a proyectar", 1, 14, 7,
@@ -1060,10 +1124,13 @@ if run_forecast:
 
         # --- 4. bandas ------------------------------------------------------
         with st.spinner("🎲 Simulando 1.000 caminos..."):
-            drift = float(d['ret'].tail(252).mean())     # deriva histórica, no pronóstico
+            # SIN DERIVA (v1.3). Antes se aplicaba drift = media de los ultimos 252
+            # retornos, lo que desplazaba la banda y creaba una asimetria que el ojo
+            # lee como sesgo direccional. Ese termino nunca se valido y contradice lo
+            # que la app promete: la banda queda centrada en el ultimo cierre.
             last_price = float(hist_regime['close'].iloc[-1])
             lo, hi, med, paths, sig_path = har_band_paths(
-                coef, d, days, z_tr, np.log(last_price), drift=drift, n_simulations=1000)
+                coef, d, days, z_tr, np.log(last_price), drift=0.0, n_simulations=1000)
 
             fechas = pd.date_range(hist_regime.index[-1] + timedelta(days=1), periods=days, freq='D')
             forecast_df = pd.DataFrame({
@@ -1088,7 +1155,10 @@ if run_forecast:
 # ============================================================================
 # TABS
 # ============================================================================
-if st.session_state.get('listo'):
+_CLAVES = ('forecast_df', 'last_price', 'days', 'hist', 'hist_regime',
+           'band_coverage', 'sig_path', 'sample_paths', 'calidad', 'har_coef')
+
+if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES):
     forecast_df = st.session_state['forecast_df']
     last_price = st.session_state['last_price']
     days = st.session_state['days']
@@ -1097,14 +1167,14 @@ if st.session_state.get('listo'):
     _cov = st.session_state['band_coverage']
     sig_path = st.session_state['sig_path']
 
-    col_main, col_chat = st.columns([3, 1])
+    col_main, col_chat = st.columns([4, 0.8])
 
     with col_chat:
         render_asistente()
 
     with col_main:
         tab1, tab2, tab3, tab4 = st.tabs(
-            ["📈 Bandas", "🔍 Regímenes", "📊 Calidad del modelo", "🩺 Track Record"])
+            ["◈  Bandas", "◧  Regímenes", "◎  Calidad del modelo", "◷  Track Record"])
 
         # ------------------------------------------------------------------ TAB 1
         with tab1:
@@ -1380,13 +1450,29 @@ if st.session_state.get('listo'):
                                "cuando la banda es un presupuesto de riesgo.")
 
             c = _cov['coverage_pct']
-            if abs(c - 95) <= 4:
-                st.success(f"✅ Bandas confiables: {c:.0f}% de los cierres dentro de la banda 95%.")
-            elif 88 <= c <= 99:
-                st.warning(f"⚠️ Cobertura {c:.0f}%: usable con margen. Amplía el semiancho ~1,2× "
-                           "al dimensionar hasta tener cobertura viva.")
+            # Sobrecubrir NO es un fallo de riesgo: cuesta oportunidad, no capital.
+            # Subcubrir si lo es. El veredicto debe distinguir la direccion del fallo.
+            _n_cov = _cov.get('n_days', 0)
+            if _n_cov < 60:
+                st.info(f"ℹ️ Cobertura {c:.0f}% sobre solo {_n_cov} días: muestra insuficiente "
+                        "para juzgar (el margen de error supera los ±8 puntos). El veredicto "
+                        "real está en el tab Track Record.")
+            elif abs(c - 95) <= 4:
+                st.success(f"✅ Bandas bien calibradas: {c:.0f}% de los cierres dentro de la "
+                           f"banda 95% ({_n_cov} días fuera de muestra).")
+            elif c > 99:
+                st.warning(f"⚠️ Cobertura {c:.0f}%: la banda es más ancha de lo necesario. No es "
+                           "un fallo de riesgo —cubre de sobra— pero te hace dimensionar "
+                           "posiciones menores de lo óptimo. Cuesta oportunidad, no capital.")
+            elif c > 95:
+                st.success(f"✅ Cobertura {c:.0f}%: por encima del 95% nominal. El presupuesto "
+                           "de riesgo es conservador.")
+            elif c >= 88:
+                st.warning(f"⚠️ Cobertura {c:.0f}%: por debajo del 95% anunciado. Amplía el "
+                           "semiancho ~1,2× al dimensionar hasta que la cobertura viva lo confirme.")
             else:
-                st.error(f"❌ Cobertura {c:.0f}%: la banda no representa lo que anuncia.")
+                st.error(f"❌ Cobertura {c:.0f}%: la banda SUBESTIMA el riesgo. Estarías tomando "
+                         "más exposición de la que crees.")
 
             st.markdown("##### HAR-RV frente a alternativas más simples")
             st.dataframe(st.session_state['calidad'], use_container_width=True, hide_index=True)
@@ -1437,19 +1523,44 @@ if st.session_state.get('listo'):
                         "'Calidad del modelo' es una estimación out-of-sample sobre la validación, "
                         "no track record en vivo — y así está etiquetada.")
             else:
+                # Dias REALMENTE evaluados: la primera fila nunca lo esta, porque no
+                # habia forecast previo contra el que comparar. Publicar "100%" con
+                # una sola observacion induce a error.
+                _n_eval = int(hl['dentro_banda_95'].notna().sum()) if 'dentro_banda_95' in hl else 0
+
                 k1, k2, k3 = st.columns(3)
                 with k1:
-                    st.metric("Días monitoreados", len(hl))
+                    st.metric("Días monitoreados", len(hl),
+                              f"{_n_eval} con evaluación", delta_color="off",
+                              help="El primer día nunca tiene evaluación: no existía un "
+                                   "forecast previo contra el que comparar.")
                 with k2:
-                    cacc = hl['dentro_banda_95'].mean() * 100 if 'dentro_banda_95' in hl else None
-                    st.metric("Cobertura acumulada", f"{cacc:.0f}%" if cacc is not None else "n/d",
-                              delta_color="off")
+                    if _n_eval >= 30:
+                        _cacc = hl['dentro_banda_95'].dropna().astype(bool).mean() * 100
+                        st.metric("Cobertura acumulada", f"{_cacc:.0f}%",
+                                  f"n = {_n_eval} días", delta_color="off")
+                    elif _n_eval > 0:
+                        _dentro = int(hl['dentro_banda_95'].dropna().astype(bool).sum())
+                        st.metric("Dentro de banda", f"{_dentro} de {_n_eval}",
+                                  "muestra aún corta", delta_color="off",
+                                  help="Se necesitan ~30 días evaluados para que un porcentaje "
+                                       "de cobertura signifique algo.")
+                    else:
+                        st.metric("Cobertura acumulada", "n/d", "sin evaluaciones aún",
+                                  delta_color="off")
                 with k3:
                     c90 = (hl['cobertura_rodante_90d'].dropna().iloc[-1]
                            if 'cobertura_rodante_90d' in hl and hl['cobertura_rodante_90d'].notna().any()
                            else None)
-                    st.metric("Cobertura rodante 90d", f"{c90:.0f}%" if c90 is not None else "n/d",
-                              "alerta si <88%", delta_color="off")
+                    if _n_eval >= 30 and c90 is not None:
+                        st.metric("Cobertura rodante 90d", f"{c90:.0f}%",
+                                  "alerta si <88%", delta_color="off")
+                    else:
+                        st.metric("Cobertura rodante 90d", "—",
+                                  f"faltan {max(0, 30 - _n_eval)} días evaluados",
+                                  delta_color="off",
+                                  help="El track record en vivo empieza a ser interpretable "
+                                       "hacia los 30 días y concluyente hacia los 90.")
                 p = hl.tail(120)
                 figt = go.Figure()
                 if {'banda_lo_95', 'banda_hi_95'}.issubset(p.columns):
@@ -1475,6 +1586,12 @@ if st.session_state.get('listo'):
                 st.dataframe(hl.tail(15).iloc[::-1], use_container_width=True, hide_index=True)
 
 else:
+    if st.session_state.get('listo'):
+        # Estado inconsistente (p. ej. tras un redespliegue): se descarta.
+        st.session_state['listo'] = False
+        st.info("La sesión se reinició tras una actualización de la app. "
+                "Pulsa **Generar bandas** para recalcular.")
+
     st.markdown("""
     ### Qué hace esta herramienta
 
