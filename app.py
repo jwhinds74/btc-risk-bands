@@ -325,16 +325,15 @@ st.markdown("""
     
     h1, h2, h3 { color: #FFFFFF !important; }
     
-    .stTabs [data-baseweb="tab-list"] { gap: 14px; }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
     
     .stTabs [data-baseweb="tab"] {
         background-color: #5A5A5A;
-        border-radius: 6px;
-        padding: 14px 34px;          /* mas aire: los titulos no rozan el borde */
+        border-radius: 4px;
+        padding: 12px 20px;
         color: #E0E0E0;
         font-size: 16px !important;
         font-weight: 600;
-        letter-spacing: .2px;
     }
     
     .stTabs [aria-selected="true"] {
@@ -707,87 +706,36 @@ def qlike(y, f):
 # ============================================================================
 # HEADER
 # ============================================================================
-header_col1, header_col2 = st.columns([4, 1])
-
-with header_col1:
+col_logo, col_title = st.columns([1, 5])
+with col_logo:
+    _logo = None
+    for _p in ("assets/LOGO HindsAnalytics v2026.png", "assets/XGBit_Logo.JPG"):
+        if os.path.exists(_p):
+            _logo = _p
+            break
+    if _logo:
+        st.image(_logo, width=120)
+    else:
+        st.markdown("<div style='font-size:56px'>📊</div>", unsafe_allow_html=True)
+with col_title:
     st.markdown("""
     <div style='padding: 0; margin-bottom: 0;'>
-        <p style='margin: 0 0 4px 0; font-size: 56px; font-weight: 780; color: #F5A05A;
-                  line-height: 1.05;'>XGBit</p>
-        <p style='margin: 0 0 14px 0; font-size: 26px; font-weight: 600; color: #F5C9A8;
-                  letter-spacing: .5px;'>Volatility Radar App</p>
-        <div style='font-size: 18px; line-height: 1.75; color: #E0E0E0;'>
-            <p style='margin: 0;'>▸ Anticipa cuánto puede moverse el Bitcoin</p>
-            <p style='margin: 0;'>▸ Encuentra los rangos probables y regímenes del mercado</p>
-            <p style='margin: 0;'>▸ Determina cuánto arriesgar en cada posición</p>
-        </div>
-        <p style='margin: 12px 0 0 0; font-size: 15px; color: #BFC7D0;'>
-            <em>Powered by Hinds Analytics</em>
+        <p style='margin: 0 0 8px 0; font-size: 56px; font-weight: 780; color: #F5A05A;'>BTC Risk Bands</p>
+        <h1 style='margin: 0 0 5px 0; font-size: 34px; font-weight: 700;'>Bandas de riesgo, volatilidad y regímenes</h1>
+        <p style='margin: 0 0 0 0; font-size: 17px; line-height: 1.5; color: #E0E0E0;'>
+            Motor <strong>HAR-RV</strong>: cuatro parámetros, sin machine learning.
+            Rango probable del precio con cobertura medida y track record auditable.<br>
+            <em style='font-size: 17px;'>Powered by Hinds Analytics</em>
+        </p>
+        <p style='margin: 10px 0 0 0; font-size: 13px; color: #E0B0B0; background-color: #4A3A3A;
+                  padding: 8px 12px; border-radius: 6px; border-left: 3px solid #CC4444;'>
+            ⚠️ Herramienta de análisis cuantitativo con fines informativos. No constituye asesoría
+            financiera. Esta app <strong>no pronostica dirección</strong>: doce experimentos con
+            protocolo anti-sesgo mostraron que el precio diario de BTC no es direccionalmente
+            predecible. Lo que sí mide, y publica con cobertura verificable, es el <strong>rango</strong>.
         </p>
     </div>
     """, unsafe_allow_html=True)
-
-with header_col2:
-    _logo_app = None
-    for _p in ("assets/XGBit_Logo.JPG", "assets/XGBit_Logo.jpg", "assets/XGBit_Logo.png"):
-        if os.path.exists(_p):
-            _logo_app = _p
-            break
-    if _logo_app:
-        st.image(_logo_app, width=180)
-
-# ---------------------------------------------------------------------------
-# Narrativa en desplegable: la informacion densa no debe abrumar de entrada,
-# pero tiene que estar disponible para quien la busque (patron de la ficha
-# tecnica plegable). Sintetiza motor + limitaciones en un solo lugar.
-# ---------------------------------------------------------------------------
-with st.expander("🎯  Qué mide esta app y por qué puedes confiar en el número", expanded=False):
-    st.markdown("""
-<div style='background-color: #8B7BB5; padding: 18px 22px; border-radius: 8px;'>
-
-**El precio de mañana no se puede predecir. Cuánto puede moverse, sí.**
-
-Esa distinción es todo el producto. XGBit no adivina hacia dónde va Bitcoin: calcula
-**hasta dónde puede llegar** y con qué probabilidad, que es la información que
-realmente permite dimensionar una posición y colocar un stop donde no lo barra el ruido.
-
-**El motor: memoria de la volatilidad a tres escalas**
-
-Bajo el capó hay un modelo *heterogéneo de volatilidad realizada*. Parte de un hecho
-observable en todos los mercados: la volatilidad se contagia entre operadores de
-horizontes distintos. Lo que hizo el intradiario ayer, lo que hizo el swing la semana
-pasada y lo que hizo el institucional el último mes dejan huellas diferentes, y las tres
-juntas explican la agitación de mañana mejor que cualquiera por separado.
-
-El modelo combina esas tres memorias — **día, semana y mes** — en una estimación de
-cuánta energía traerá la sesión siguiente. De ahí sale el ancho de la banda: se estrecha
-cuando el mercado se calma y se abre cuando se tensa, sin que nadie mueva una perilla.
-
-**Por qué esta arquitectura y no otra**
-
-Llegamos aquí después de doce experimentos con protocolo anti-sesgo: holdout bloqueado,
-detección automática de fuga de información, validación walk-forward con costos reales y
-comparación obligatoria contra alternativas más simples. Se probaron modelos de machine
-learning con búsqueda de hiperparámetros, calibración de probabilidades y horizontes
-intradiarios.
-
-El veredicto fue nítido: para **dirección**, ningún modelo superó a la referencia trivial.
-Para **volatilidad**, esta arquitectura ganó — y lo hizo con cuatro parámetros, sin nada
-que ajustar a mano y sin espacio para sobreajustar. Esa experimentación es la razón por la
-que hoy sabes exactamente qué esperar de cada número en pantalla.
-
-**La diferencia que puedes verificar**
-
-Cada banda emitida se registra con fecha inmutable y se compara al día siguiente contra
-el cierre real. La pestaña *Track Record* publica ese historial. No prometemos precisión:
-la medimos y la enseñamos, acierte o falle.
-
-</div>
-    """, unsafe_allow_html=True)
-
-st.caption("⚠️ Herramienta de análisis cuantitativo con fines informativos. No constituye "
-           "asesoría financiera ni recomendación de compra o venta. El mercado cripto "
-           "conlleva riesgo sustancial de pérdida.")
 
 st.markdown("---")
 
@@ -795,18 +743,6 @@ st.markdown("---")
 # SIDEBAR
 # ============================================================================
 with st.sidebar:
-    _logo_inst = None
-    for _p in ("assets/LOGO HindsAnalytics v2026.png", "assets/logo_hinds.png",
-               "assets/LOGO_HindsAnalytics.png"):
-        if os.path.exists(_p):
-            _logo_inst = _p
-            break
-    if _logo_inst:
-        _l1, _l2, _l3 = st.columns([1, 3, 1])
-        with _l2:
-            st.image(_logo_inst, width=140)
-        st.markdown("<div style='margin-bottom:10px'></div>", unsafe_allow_html=True)
-
     st.header("⚙️ Configuración")
 
     days = st.slider("Días a proyectar", 1, 14, 7,
@@ -1152,10 +1088,7 @@ if run_forecast:
 # ============================================================================
 # TABS
 # ============================================================================
-_CLAVES = ('forecast_df', 'last_price', 'days', 'hist', 'hist_regime',
-           'band_coverage', 'sig_path', 'sample_paths', 'calidad', 'har_coef')
-
-if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES):
+if st.session_state.get('listo'):
     forecast_df = st.session_state['forecast_df']
     last_price = st.session_state['last_price']
     days = st.session_state['days']
@@ -1164,14 +1097,14 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
     _cov = st.session_state['band_coverage']
     sig_path = st.session_state['sig_path']
 
-    col_main, col_chat = st.columns([4, 0.8])
+    col_main, col_chat = st.columns([3, 1])
 
     with col_chat:
         render_asistente()
 
     with col_main:
         tab1, tab2, tab3, tab4 = st.tabs(
-            ["◈  Bandas", "◧  Regímenes", "◎  Calidad del modelo", "◷  Track Record"])
+            ["📈 Bandas", "🔍 Regímenes", "📊 Calidad del modelo", "🩺 Track Record"])
 
         # ------------------------------------------------------------------ TAB 1
         with tab1:
@@ -1542,12 +1475,6 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                 st.dataframe(hl.tail(15).iloc[::-1], use_container_width=True, hide_index=True)
 
 else:
-    if st.session_state.get('listo'):
-        # Estado inconsistente (p. ej. tras un redespliegue): se descarta.
-        st.session_state['listo'] = False
-        st.info("La sesión se reinició tras una actualización de la app. "
-                "Pulsa **Generar bandas** para recalcular.")
-
     st.markdown("""
     ### Qué hace esta herramienta
 
