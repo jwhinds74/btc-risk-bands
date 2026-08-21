@@ -279,6 +279,11 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import requests
 import ruptures as rpt
+
+try:
+    import alerts as ALERTAS
+except Exception:
+    ALERTAS = None
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -814,14 +819,26 @@ with st.sidebar:
                           "es incertidumbre acumulada, no una predicción puntual.")
 
     regime_option = st.selectbox(
-        "Régimen aplicado", ["Actual (último)", "Actuales (últimos 2)", "Todo el historial"], index=1,
-        help="Sobre qué tramo de historia se ajusta el modelo. Menos historia se adapta más "
-             "rápido a un cambio de régimen; más historia estima con menos ruido.")
+        "Ventana de entrenamiento",
+        ["Producción (750 días)", "Actual (último régimen)",
+         "Actuales (últimos 2 regímenes)", "Todo el historial"], index=0,
+        help="'Producción' usa exactamente la misma ventana que el monitor diario, así que las "
+             "bandas de esta pantalla coinciden con las del track record. Las demás son "
+             "exploratorias: con menos de ~500 días el componente mensual se estima con muy "
+             "pocas ventanas independientes y la cobertura se degrada.")
+
+    TRAIN_WINDOW = 750   # debe coincidir con CONFIG['TRAIN_WINDOW'] de monitor.py
 
     show_technical = st.checkbox(
         "Mostrar contexto técnico", value=True,
         help="Panel descriptivo con MA20/50/200, RSI, MACD y ATR. Son observaciones de "
              "contexto, nunca señales de compra o venta.")
+
+    st.session_state['usar_noticias'] = st.checkbox(
+        "Buscar noticias de riesgo", value=False,
+        help="Consulta la web en busca de catalizadores no programados. Consume cuota de Groq "
+             "y tarda unos segundos. Capa NO validada estadísticamente: solo refuerza alertas "
+             "que ya tienen base en los datos.")
 
     show_paths = st.checkbox(
         "Mostrar caminos simulados", value=True,
@@ -873,6 +890,12 @@ with st.sidebar:
 # discriminaba y se retiro). Aqui el asistente explica bandas, volatilidad,
 # regimenes y dimensionamiento, y tiene prohibido dar direccion.
 # ============================================================================
+# Modelo de Groq. Si vuelve a cambiar, se edita SOLO aqui.
+# Groq retiro llama-3.3-70b-versatile el 16-ago-2026; sucesor recomendado por Groq.
+GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_FALLBACKS = ["openai/gpt-oss-20b", "qwen/qwen3.6-27b"]
+
+
 def construir_contexto():
     """Arma el estado actual de la app para el prompt del asistente."""
     fd = st.session_state.get('forecast_df')
@@ -1013,13 +1036,22 @@ def render_asistente():
 
             cliente = Groq(api_key=api_key)
             sistema = PROMPT_SISTEMA.format(contexto=construir_contexto())
-            resp = cliente.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "system", "content": sistema}] +
-                         [{"role": m['role'], "content": m['content']}
-                          for m in st.session_state.mensajes[-8:]],
-                temperature=0.3, max_tokens=800)
-            texto = resp.choices[0].message.content
+            _msgs = ([{"role": "system", "content": sistema}] +
+                     [{"role": m['role'], "content": m['content']}
+                      for m in st.session_state.mensajes[-8:]])
+            # Si Groq retira el modelo, se prueban los sucesores antes de fallar.
+            texto, _err = None, None
+            for _modelo in [GROQ_MODEL] + GROQ_FALLBACKS:
+                try:
+                    resp = cliente.chat.completions.create(
+                        model=_modelo, messages=_msgs, temperature=0.3, max_tokens=800)
+                    texto = resp.choices[0].message.content
+                    break
+                except Exception as _e:
+                    _err = _e
+                    continue
+            if texto is None:
+                raise _err
             st.session_state.mensajes.append({'role': 'assistant', 'content': texto})
             st.rerun()
         except Exception as e:
@@ -1029,7 +1061,7 @@ def render_asistente():
         st.session_state.mensajes = []
         st.rerun()
 
-    st.caption("*Powered by Groq (Llama 3.3)*")
+    st.caption(f"*Powered by Groq · {GROQ_MODEL}*")
 
 
 # ============================================================================
@@ -1069,17 +1101,35 @@ if run_forecast:
             st.session_state['regime_stats'] = regime_stats
 
         # tramo de entrenamiento según el régimen elegido
-        if regime_option == "Actual (último)" and len(breakpoints) >= 2:
-            ini = breakpoints[-2]
-        elif regime_option == "Actuales (últimos 2)" and len(breakpoints) >= 3:
-            ini = breakpoints[-3]
+        # La ventana debe coincidir con la del monitor, o la app y el track record
+        # serian dos modelos distintos publicando bajo el mismo nombre.
+        if regime_option == "Producción (750 días)":
+            hist_regime = hist.tail(TRAIN_WINDOW)
+        elif regime_option == "Actual (último régimen)" and len(breakpoints) >= 2:
+            hist_regime = hist.iloc[max(0, breakpoints[-2]):]
+        elif regime_option == "Actuales (últimos 2 regímenes)" and len(breakpoints) >= 3:
+            hist_regime = hist.iloc[max(0, breakpoints[-3]):]
         else:
-            ini = 0
-        hist_regime = hist.iloc[max(0, ini):]
-        if len(hist_regime) < 150:                       # HAR necesita ~22 + margen
-            hist_regime = hist.iloc[-max(250, len(hist_regime)):]
+            hist_regime = hist
+
+        # Piso duro: por debajo de 250 observaciones el componente mensual tendria
+        # menos de 11 ventanas independientes y el ajuste deja de ser fiable.
+        if len(hist_regime) < 250:
+            hist_regime = hist.tail(min(250, len(hist)))
+
         st.session_state['hist_regime'] = hist_regime
+        st.session_state['train_window_used'] = len(hist_regime)
         regime_label = f"{len(hist_regime)} días de entrenamiento"
+        if len(hist_regime) < 500:
+            st.warning(
+                f"⚠️ Ventana corta ({len(hist_regime)} días). Con menos de ~500 observaciones "
+                "la cobertura de las bandas se degrada: en pruebas cayó al 87% frente al 95% "
+                "nominal, es decir SUBESTIMANDO el riesgo. Usa 'Producción (750 días)' para "
+                "operar; esta opción es exploratoria.")
+        elif len(hist_regime) != TRAIN_WINDOW:
+            st.info(f"ℹ️ Ventana de {len(hist_regime)} días, distinta de la del monitor "
+                    f"({TRAIN_WINDOW}). Las bandas de esta pantalla no coincidirán exactamente "
+                    "con las del track record.")
 
         # --- 3. HAR-RV ------------------------------------------------------
         with st.spinner("📐 Ajustando HAR-RV..."):
@@ -1273,7 +1323,68 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
     </div>
                 """, unsafe_allow_html=True)
 
-            # --- contexto técnico ---
+            # ------------------------------------------------------------------
+        # PANEL DE ALERTAS DE RIESGO
+        # Tres capas independientes, cada una con su nivel de evidencia visible.
+        # Ninguna indica direccion: todas responden a "riesgo de movimiento
+        # brusco", que es una pregunta distinta de "hacia donde va el precio".
+        # ------------------------------------------------------------------
+        if ALERTAS is not None:
+            try:
+                _d_al = st.session_state.get('d_full')
+                _rv_hoy = float(_d_al['rv'].iloc[-1]) if _d_al is not None else np.nan
+                _riesgo = ALERTAS.evaluar_riesgo(
+                    rv_realizada=_rv_hoy,
+                    sigma_pronosticada=float(sig_path[0]),
+                    usar_noticias=st.session_state.get('usar_noticias', False))
+                _col = {'ninguno': '#44FF44', 'bajo': '#F5C9A8',
+                        'medio': '#F5A05A', 'alto': '#FF6B6B'}[_riesgo['nivel']]
+                _ico = {'ninguno': 'OK', 'bajo': 'i', 'medio': '!', 'alto': '!!'}[_riesgo['nivel']]
+
+                if _riesgo['nivel'] != 'ninguno':
+                    _ref = (" &middot; <span style='color:#FF6B6B'>REFORZADO</span>"
+                            if _riesgo['reforzado'] else "")
+                    st.markdown(
+                        "<div style='background-color:#2E3A4E;padding:14px 18px;border-radius:8px;"
+                        f"border-left:5px solid {_col};margin:12px 0;'>"
+                        f"<p style='margin:0;font-size:18px;color:#FFF;'>{_ico} "
+                        f"<strong>Riesgo de volatilidad: {_riesgo['nivel'].upper()}</strong>{_ref}"
+                        "</p><p style='margin:6px 0 0 0;font-size:13px;color:#C9D2DB;"
+                        f"white-space:pre-line;'>{_riesgo['mensaje']}</p></div>",
+                        unsafe_allow_html=True)
+                else:
+                    st.success("Sin alertas de riesgo: ninguna de las tres capas "
+                               "(shock, calendario, noticias) esta activa.")
+
+                with st.expander("Detalle de las tres capas de alerta", expanded=False):
+                    _sh, _ca, _no = _riesgo['shock'], _riesgo['calendario'], _riesgo['noticias']
+                    _ratio = _sh.get('ratio')
+                    _ratio = f"{_ratio}x" if (_ratio is not None and np.isfinite(_ratio)) else "n/d"
+                    _evs = (' - '.join(_ca['eventos']) if _ca['eventos']
+                            else 'Sin eventos programados en 48h.')
+                    _nws = _no.get('mensaje') or 'Desactivada o sin hallazgos.'
+                    st.markdown(
+                        "**1 - Shock de volatilidad** — *evidencia: medida sobre tus propios datos*\n\n"
+                        f"Ratio realizada/pronosticada: **{_ratio}** (dispara en "
+                        f"{ALERTAS.CONFIG['SHOCK_RATIO']}x, severo en {ALERTAS.CONFIG['SHOCK_SEVERE']}x). "
+                        "Deteccion *ex post*: constata que el estimador quedo por detras del "
+                        "regimen. No predice.\n\n"
+                        "**2 - Calendario de eventos** — *evidencia: fechas conocidas de antemano*\n\n"
+                        f"{_evs}\n\n"
+                        "Leer una agenda no es anticipar: son fechas publicas. Edita "
+                        "`monitoring/events.csv` para mantenerla al dia.\n\n"
+                        "**3 - Noticias** — *capa NO validada estadisticamente*\n\n"
+                        f"{_nws}\n\n"
+                        "No existe un historico de noticias con el que hacer backtest, asi que su "
+                        "tasa de acierto es desconocida. Por eso **nunca genera por si sola la "
+                        "alerta mas alta**: su nivel esta limitado a *medio*. Refuerza, no decide.")
+                    st.caption("Regla de combinacion: el nivel final es el maximo de las capas, "
+                               "con techo para la capa no validada. Dos capas coincidiendo desde "
+                               "evidencias independientes es mas informativo que una sola.")
+            except Exception as _e:
+                st.caption(f"Panel de alertas no disponible ({type(_e).__name__}).")
+
+        # --- contexto técnico ---
             _card = ("<div style='background-color:#3A3A3A;padding:12px;border-radius:8px;"
                      "text-align:center;border-top:3px solid {c};min-height:118px;'>"
                      "<p style='margin:0;font-size:12px;color:#999;'>{t}</p>"

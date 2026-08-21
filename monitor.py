@@ -24,6 +24,11 @@ import pandas as pd
 import requests
 from scipy import stats as sps
 
+try:
+    import alerts as ALERTAS
+except Exception:                      # el monitor debe correr aunque falte el modulo
+    ALERTAS = None
+
 # Motor HAR-RV: solo numpy/pandas. Sin xgboost ni scikit-learn.
 
 # ---------------------------------------------------------------------------
@@ -32,7 +37,8 @@ CONFIG = {
     'HEALTH_LOG': 'monitoring/health_log.csv',
     'LAST_FORECAST': 'monitoring/last_forecast.json',
     'CALIB_DAYS': 250,           # cola para estimar los residuos estandarizados
-    'DRIFT_WINDOW': 252,         # ventana de la deriva historica
+    'TRAIN_WINDOW': 750,         # ~3 anos: mas historia mezcla regimenes incompatibles
+    'MZ_WINDOW': 500,            # ventana para la recalibracion Mincer-Zarnowitz
     'N_BOOTSTRAP': 1000,
     'ROLLING_WINDOW': 90,
     'CALIB_FRACTION': 0.20,   # cola held-out para los residuos conformales de la banda
@@ -58,6 +64,10 @@ def conditional_sigma(v):
     a = np.where(np.isfinite(a), a, np.median(fin))
     return np.maximum(a, floor)
 
+
+# Version del motor. CAMBIALA con cada modificacion del modelo: sin esto el
+# track record mezcla versiones y la cobertura acumulada deja de significar nada.
+MODEL_VERSION = 'HAR-RV-1.3'
 
 ALERTS = []
 
@@ -287,14 +297,49 @@ def main():
                 'sin evaluacion hoy (probable dia perdido en la cadena).')
 
     # --- PASO 3: reajustar HAR y emitir el forecast de HOY ------------------
-    coef = fit_har(d)
-    sig_hist = predict_har(coef, d)
-    z_pool = (d['ret'].values / np.maximum(sig_hist, EPS))
+    # VENTANA ACOTADA (v1.3). Antes se ajustaba sobre TODO el historial (9 anos).
+    # La validacion econometrica dio CUSUM fuera de banda (1,62 vs 0,95) y un
+    # coeficiente mensual con CV del 135% entre ventanas rodantes: mezclar 2017
+    # con 2026 es mezclar mercados incompatibles.
+    d_fit = d.tail(CONFIG['TRAIN_WINDOW']) if len(d) > CONFIG['TRAIN_WINDOW'] else d
+    coef = fit_har(d_fit)
+    sig_hist = predict_har(coef, d_fit)
+
+    # RECALIBRACION MINCER-ZARNOWITZ (v1.3). La validacion dio b=0,833 y sesgo
+    # +7,9%: el modelo SOBRERREACCIONA a los cambios de volatilidad. Se corrige
+    # con la propia regresion MZ estimada sobre el pasado observado.
+    mz_a, mz_b = 0.0, 1.0
+    try:
+        _w = min(CONFIG['MZ_WINDOW'], len(d_fit))
+        _f = np.asarray(sig_hist[-_w:], dtype=float)
+        _r = np.asarray(d_fit['y'].values[-_w:], dtype=float)
+        if len(_f) >= 100 and np.std(_f) > 0:
+            _A = np.c_[np.ones(len(_f)), _f]
+            _c, *_ = np.linalg.lstsq(_A, _r, rcond=None)
+            # Solo se aplica si la correccion es moderada; una pendiente absurda
+            # indicaria un problema de datos, no un sesgo a corregir.
+            if 0.5 <= _c[1] <= 1.6:
+                mz_a, mz_b = float(_c[0]), float(_c[1])
+    except Exception as e:
+        log(f'Recalibracion MZ omitida ({type(e).__name__})')
+
+    z_pool = (d_fit['ret'].values / np.maximum(sig_hist, EPS))
     z_pool = z_pool[np.isfinite(z_pool)][-CONFIG['CALIB_DAYS']:]
-    drift = float(d['ret'].tail(CONFIG['DRIFT_WINDOW']).mean())
-    banda_lo, banda_hi, centro, sigma_hoy = emit_band(coef, d, z_pool, last_close, drift=drift)
-    log(f'HAR-RV ajustado: c={coef[0]:.5f} b_d={coef[1]:.3f} b_w={coef[2]:.3f} b_m={coef[3]:.3f} '
-        f'| {len(z_pool)} residuos de calibracion')
+
+    # SIN DERIVA (v1.3): la banda se centra en el ultimo cierre. El termino de
+    # deriva la desplazaba y sugeria direccion sin haber sido validado.
+    banda_lo, banda_hi, centro, sigma_cruda = emit_band(coef, d_fit, z_pool,
+                                                        last_close, drift=0.0)
+    sigma_hoy = max(mz_a + mz_b * sigma_cruda, EPS)
+    if sigma_cruda > EPS and abs(sigma_hoy - sigma_cruda) > 1e-9:
+        _esc = sigma_hoy / sigma_cruda
+        banda_lo = last_close * np.exp(np.log(banda_lo / last_close) * _esc)
+        banda_hi = last_close * np.exp(np.log(banda_hi / last_close) * _esc)
+
+    log(f'HAR-RV ajustado sobre {len(d_fit)} dias: c={coef[0]:.5f} b_d={coef[1]:.3f} '
+        f'b_w={coef[2]:.3f} b_m={coef[3]:.3f} | {len(z_pool)} residuos')
+    log(f'Recalibracion MZ: a={mz_a:+.5f} b={mz_b:.3f} -> sigma {sigma_cruda:.5f} '
+        f'-> {sigma_hoy:.5f}')
 
     next_date = (last_date + pd.Timedelta(days=1)).date()
     json.dump({
@@ -304,6 +349,9 @@ def main():
         'base_date': str(last_date.date()),
         'motor': 'HAR-RV',
         'sigma': round(sigma_hoy, 6),
+        'sigma_cruda': round(sigma_cruda, 6),
+        'mz_a': round(mz_a, 6), 'mz_b': round(mz_b, 4),
+        'train_window': int(len(d_fit)),
         'coef': [round(float(c), 6) for c in coef],
         'banda_lo_95': round(banda_lo, 2),
         'banda_hi_95': round(banda_hi, 2),
@@ -312,6 +360,25 @@ def main():
     }, open(CONFIG['LAST_FORECAST'], 'w'), indent=2)
     log(f'Forecast emitido para {next_date}: vol {sigma_hoy*100:.2f}%/dia | '
         f'banda [{banda_lo:,.0f}, {banda_hi:,.0f}]')
+
+    # --- PASO 3b: CAPAS DE ALERTA -----------------------------------------
+    # Tres detectores independientes de RIESGO DE VOLATILIDAD (nunca de direccion):
+    # shock ex post sobre datos propios, calendario de eventos programados, y
+    # busqueda de noticias (esta ultima explicitamente NO validada).
+    riesgo = None
+    if ALERTAS is not None:
+        try:
+            rv_real_hoy = float(d['rv'].iloc[-1])
+            riesgo = ALERTAS.evaluar_riesgo(
+                rv_realizada=rv_real_hoy,
+                sigma_pronosticada=sigma_emitida if sigma_emitida else sigma_hoy,
+                usar_noticias=os.environ.get('ALERTS_NEWS', '1') == '1',
+            )
+            log(f"Riesgo: nivel={riesgo['nivel']} | capas activas={riesgo['n_capas']}"
+                f"{' | REFORZADO' if riesgo['reforzado'] else ''}")
+        except Exception as e:
+            log(f'Capa de alertas omitida ({type(e).__name__}: {e})')
+            riesgo = None
 
     # --- PASO 4: fila del health_log ---------------------------------------
     regimen, regimen_cambio = detect_regime(px)
@@ -333,11 +400,17 @@ def main():
         'banda_lo_95': None if prev is None else prev.get('banda_lo_95'),
         'banda_hi_95': None if prev is None else prev.get('banda_hi_95'),
         'sigma_hoy': round(sigma_hoy, 6),
+        'mz_b': round(mz_b, 4),
+        'train_window': int(len(d_fit)),
         'banda_lo_95_hoy': round(banda_lo, 2),
         'banda_hi_95_hoy': round(banda_hi, 2),
         'regimen_actual': regimen,
         'regimen_cambio': regimen_cambio,
         'ks_drift_pvalue': None if np.isnan(ks_p) else round(ks_p, 4),
+        'riesgo_nivel': riesgo['nivel'] if riesgo else None,
+        'riesgo_capas': riesgo['n_capas'] if riesgo else None,
+        'riesgo_shock': riesgo['shock']['ratio'] if riesgo else None,
+        'model_version': MODEL_VERSION,
         'fuente': source,
     }
 
@@ -357,7 +430,8 @@ def main():
             'cobertura_rodante_90d', 'error_vol_medio_90d', 'error_vol_abs_90d',
             'regimen_actual', 'regimen_cambio', 'ks_drift_pvalue',
             'banda_lo_95', 'banda_hi_95', 'sigma_hoy', 'banda_lo_95_hoy',
-            'banda_hi_95_hoy', 'fuente']
+            'banda_hi_95_hoy', 'mz_b', 'train_window',
+            'riesgo_nivel', 'riesgo_capas', 'riesgo_shock', 'model_version', 'fuente']
     out = pd.concat([hist_log, pd.DataFrame([row])], ignore_index=True)
     out = out.reindex(columns=[c for c in cols if c in out.columns or c in row])
     out.to_csv(CONFIG['HEALTH_LOG'], index=False)
@@ -366,14 +440,20 @@ def main():
     # --- PASO 5: umbrales -> Telegram --------------------------------------
     if row['cobertura_rodante_90d'] is not None and row['cobertura_rodante_90d'] < CONFIG['COVERAGE_ALERT']:
         ALERTS.append(f"Cobertura 90d en {row['cobertura_rodante_90d']}% (umbral {CONFIG['COVERAGE_ALERT']}%)")
+    if riesgo and riesgo['nivel'] in ('medio', 'alto'):
+        _pref = 'RIESGO ELEVADO' if riesgo['nivel'] == 'alto' else 'Riesgo moderado'
+        ALERTS.append(f"{_pref} de volatilidad ({riesgo['n_capas']} capa(s) activa(s))"
+                      + (' — REFORZADO por coincidencia entre capas' if riesgo['reforzado'] else ''))
+
     if regimen_cambio:
         ALERTS.append(f'Cambio de regimen detectado ({regimen}) — revisar posiciones, no abrir tamano nuevo')
     if row['ks_drift_pvalue'] is not None and row['ks_drift_pvalue'] < CONFIG['KS_ALERT']:
         ALERTS.append(f"Drift de features: KS p={row['ks_drift_pvalue']} (<{CONFIG['KS_ALERT']})")
 
     if ALERTS:
+        _detalle = f"\n\n{riesgo['mensaje']}" if (riesgo and riesgo['nivel'] != 'ninguno') else ''
         msg = ('🚨 *BTC Risk Bands — alerta del monitor*\n'
-               f"Fecha: {row['fecha']}\n\n" + '\n'.join(f'• {a}' for a in ALERTS) +
+               f"Fecha: {row['fecha']}\n\n" + '\n'.join(f'• {a}' for a in ALERTS) + _detalle +
                f"\n\nCierre: ${last_close:,.0f} | vol manana: {sigma_hoy*100:.2f}% | "
                f"banda [{banda_lo:,.0f}, {banda_hi:,.0f}]")
         send_telegram(msg)
