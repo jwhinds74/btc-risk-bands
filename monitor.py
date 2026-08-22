@@ -33,20 +33,45 @@ except Exception:                      # el monitor debe correr aunque falte el 
 # Motor HAR-RV: solo numpy/pandas. Sin xgboost ni scikit-learn.
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# FRECUENCIA DE BARRA (v1.7)
+# ---------------------------------------------------------------------------
+# Se parametriza en vez de fijarse, para poder correr 1d y 4h EN PARALELO y
+# decidir con datos cual estima mejor la volatilidad — el mismo criterio que
+# retiro a XGBoost. Cambiar BAR aqui reconfigura todo lo demas.
+#
+# El HAR de Corsi define sus tres componentes en DIAS (1, 5, 22). A barra
+# intradiaria hay que traducirlos a numero de barras, no dejarlos en 1/5/22:
+# a 4h, "un dia" son 6 barras y "un mes" 132. Mantenerlos sin escalar
+# convertiria el componente mensual en uno de 3,7 dias.
+#
+# Ficheros SEPARADOS por frecuencia: mezclar evaluaciones de 1d y 4h en el mismo
+# health_log destruiria el track record de ambos.
+BAR = os.environ.get('BAR_INTERVAL', '1d')      # '1d' | '4h' | '8h'
+
+_BARS_PER_DAY = {'1d': 1, '8h': 3, '4h': 6, '1h': 24}
+BPD = _BARS_PER_DAY.get(BAR, 1)
+_SUF = '' if BAR == '1d' else f'_{BAR}'
+
 CONFIG = {
-    'PRICE_CACHE': 'btc_ohlcv_cache.csv',
-    'HEALTH_LOG': 'monitoring/health_log.csv',
-    'LAST_FORECAST': 'monitoring/last_forecast.json',
-    'CALIB_DAYS': 250,           # cola para estimar los residuos estandarizados
-    'TRAIN_WINDOW': 750,         # ~3 anos: mas historia mezcla regimenes incompatibles
-    'MZ_WINDOW': 500,            # ventana para la recalibracion Mincer-Zarnowitz
+    'BAR': BAR,
+    'BARS_PER_DAY': BPD,
+    'PRICE_CACHE': f'btc_ohlcv_cache{_SUF}.csv',
+    'HEALTH_LOG': f'monitoring/health_log{_SUF}.csv',
+    'LAST_FORECAST': f'monitoring/last_forecast{_SUF}.json',
+    # Componentes HAR escalados a barras
+    'HAR_W': 5 * BPD,            # componente "semanal"
+    'HAR_M': 22 * BPD,           # componente "mensual"
+    'CALIB_DAYS': 250 * BPD,     # cola para los residuos estandarizados
+    'TRAIN_WINDOW': 750 * BPD,   # ~3 anos en barras
+    'MZ_WINDOW': 500 * BPD,      # ventana para la recalibracion Mincer-Zarnowitz
     'N_BOOTSTRAP': 1000,
-    'ROLLING_WINDOW': 90,
+    'ROLLING_WINDOW': 90 * BPD,
     'CALIB_FRACTION': 0.20,   # cola held-out para los residuos conformales de la banda
     'MIN_SIGNALS_FOR_ACC_ALERT': 60,
     'COVERAGE_ALERT': 88.0,
     'KS_ALERT': 0.05,
-    'REGIME_MIN_SIZE': 30,
+    'REGIME_MIN_SIZE': 30 * BPD,
     'REGIME_PEN': 10,
     'SEED': 42,
 }
@@ -68,7 +93,7 @@ def conditional_sigma(v):
 
 # Version del motor. CAMBIALA con cada modificacion del modelo: sin esto el
 # track record mezcla versiones y la cobertura acumulada deja de significar nada.
-MODEL_VERSION = 'HAR-RV-1.6'
+MODEL_VERSION = f'HAR-RV-1.7-{BAR}'
 
 ALERTS = []
 
@@ -84,7 +109,10 @@ def fetch_prices():
     """Jerarquia identica a la app: CryptoCompare -> Binance klines -> cache."""
     df, source = None, None
     key = os.environ.get('CRYPTOCOMPARE_API_KEY', '')
+    # CryptoCompare solo se usa para barra diaria; a intradia se va directo a Binance.
     try:
+        if CONFIG['BAR'] != '1d':
+            raise RuntimeError('intradia: se usa Binance')
         p = {'fsym': 'BTC', 'tsym': 'USD', 'limit': 2000}
         headers = {'authorization': f'Apikey {key}'} if key else {}
         r = requests.get('https://min-api.cryptocompare.com/data/v2/histoday',
@@ -101,18 +129,20 @@ def fetch_prices():
         log(f'CryptoCompare no disponible ({type(e).__name__}) -> Binance')
         try:
             rows, end = [], None
-            for _ in range(3):
-                p = {'symbol': 'BTCUSDT', 'interval': '1d', 'limit': 500}
+            # A 4h hacen falta ~6x mas barras para cubrir la misma historia.
+            _paginas = 3 if CONFIG['BAR'] == '1d' else 12
+            for _ in range(_paginas):
+                p = {'symbol': 'BTCUSDT', 'interval': CONFIG['BAR'], 'limit': 1000}
                 if end:
                     p['endTime'] = end
-                r = requests.get('https://api.binance.com/api/v3/klines', params=p, timeout=15)
+                r = requests.get('https://api.binance.com/api/v3/klines', params=p, timeout=20)
                 r.raise_for_status()
                 k = r.json()
                 if not k:
                     break
                 rows = k + rows
                 end = k[0][0] - 1
-                if len(k) < 500:
+                if len(k) < 1000:
                     break
             d = pd.DataFrame(rows, columns=['t', 'open', 'high', 'low', 'close', 'vol',
                                             'ct', 'volume', 'n', 'tb', 'tq', 'ig'])
@@ -135,8 +165,14 @@ def fetch_prices():
         raise RuntimeError('Sin datos de precio: APIs y cache fallaron.')
 
     df = df.sort_index()
-    today_utc = pd.Timestamp(dt.datetime.now(dt.timezone.utc).date())
-    df = df[df.index < today_utc]          # solo velas cerradas
+    # Solo barras CERRADAS: se descarta la barra en curso, sea de 24h o de 4h.
+    ahora = pd.Timestamp(dt.datetime.now(dt.timezone.utc)).tz_localize(None)
+    if CONFIG['BAR'] == '1d':
+        corte = pd.Timestamp(ahora.date())
+    else:
+        _h = int(CONFIG['BAR'].replace('h', ''))
+        corte = ahora.floor(f'{_h}h')
+    df = df[df.index < corte]
     if source != 'cache local':
         try:
             df.to_csv(CONFIG['PRICE_CACHE'])
@@ -165,8 +201,8 @@ def build_har_dataset(px):
     d['ret'] = np.log(px['close']).diff()
     d['rv'] = parkinson_rv(px)
     d['rv_d'] = d['rv'].shift(1)
-    d['rv_w'] = d['rv'].rolling(5).mean().shift(1)
-    d['rv_m'] = d['rv'].rolling(22).mean().shift(1)
+    d['rv_w'] = d['rv'].rolling(CONFIG['HAR_W']).mean().shift(1)
+    d['rv_m'] = d['rv'].rolling(CONFIG['HAR_M']).mean().shift(1)
     d['y'] = d['rv']
     return d.dropna()
 
@@ -217,7 +253,7 @@ def predict_har(coef, d_rows):
 #
 # No predice nada: solo impide que el estimador se quede por debajo de lo que
 # el mercado ACABA de mostrar.
-VOL_FLOOR_SPAN = 3
+VOL_FLOOR_SPAN = 3 * BPD    # 3 DIAS de memoria, no 3 barras
 
 
 def piso_volatilidad(d, span=VOL_FLOOR_SPAN):
@@ -339,7 +375,8 @@ def main():
 
     if prev:
         target = prev.get('target_date')
-        if target == str(last_date.date()):
+        _id_actual = str(last_date.date() if CONFIG['BAR'] == '1d' else last_date)
+        if target == _id_actual:
             lo, hi = float(prev['banda_lo_95']), float(prev['banda_hi_95'])
             dentro_banda = bool(lo <= last_close <= hi)
             sigma_emitida = float(prev.get('sigma', float('nan')))
@@ -349,8 +386,8 @@ def main():
             log(f'Evaluacion de ayer -> cierre {last_close:,.0f} | banda [{lo:,.0f}, {hi:,.0f}] '
                 f'-> dentro={dentro_banda} | vol emitida {sigma_emitida:.4f} vs real {rv_real:.4f}')
         else:
-            log(f'last_forecast apunta a {target} pero el ultimo cierre es {last_date.date()}: '
-                'sin evaluacion hoy (probable dia perdido en la cadena).')
+            log(f'last_forecast apunta a {target} pero la ultima barra es {_id_actual}: '
+                'sin evaluacion en esta corrida (probable hueco en la cadena).')
 
     # --- PASO 3: reajustar HAR y emitir el forecast de HOY ------------------
     # VENTANA ACOTADA (v1.3). Antes se ajustaba sobre TODO el historial (9 anos).
@@ -400,12 +437,16 @@ def main():
     log(f'Recalibracion MZ: a={mz_a:+.5f} b={mz_b:.3f} -> sigma {sigma_cruda:.5f} '
         f'-> {sigma_hoy:.5f}')
 
-    next_date = (last_date + pd.Timedelta(days=1)).date()
+    _paso = pd.Timedelta(days=1) if CONFIG['BAR'] == '1d' \
+        else pd.Timedelta(hours=int(CONFIG['BAR'].replace('h', '')))
+    next_ts = last_date + _paso
+    next_date = next_ts.date() if CONFIG['BAR'] == '1d' else next_ts
     json.dump({
         'emitted_at_utc': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
         'target_date': str(next_date),
         'base_close': last_close,
-        'base_date': str(last_date.date()),
+        'base_date': str(last_date.date() if CONFIG['BAR'] == '1d' else last_date),
+        'bar': CONFIG['BAR'],
         'motor': 'HAR-RV',
         'sigma': round(sigma_hoy, 6),
         'sigma_cruda': round(sigma_cruda, 6),
@@ -451,7 +492,8 @@ def main():
             hist_log = pd.DataFrame()
 
     row = {
-        'fecha': str(last_date.date()),
+        'fecha': str(last_date.date() if CONFIG['BAR'] == '1d' else last_date),
+        'bar': CONFIG['BAR'],
         'cierre': round(last_close, 2),
         'dentro_banda_95': dentro_banda,
         'sigma_emitida': None if sigma_emitida is None else round(sigma_emitida, 6),
@@ -488,7 +530,7 @@ def main():
     row['error_vol_medio_90d'] = round(float(ev.mean()), 1) if len(ev) else None
     row['error_vol_abs_90d'] = round(float(ev.abs().mean()), 1) if len(ev) else None
 
-    cols = ['fecha', 'cierre', 'dentro_banda_95', 'sigma_emitida', 'error_vol_%',
+    cols = ['fecha', 'bar', 'cierre', 'dentro_banda_95', 'sigma_emitida', 'error_vol_%',
             'cobertura_rodante_90d', 'error_vol_medio_90d', 'error_vol_abs_90d',
             'regimen_actual', 'regimen_cambio', 'ks_drift_pvalue',
             'banda_lo_95', 'banda_hi_95', 'sigma_hoy', 'banda_lo_95_hoy',
@@ -522,7 +564,8 @@ def main():
         send_telegram(msg)
 
     # Resumen dominical (prueba de vida) — domingo UTC
-    if dt.datetime.now(dt.timezone.utc).weekday() == 6:
+    _ahora = dt.datetime.now(dt.timezone.utc)
+    if _ahora.weekday() == 6 and (CONFIG['BAR'] == '1d' or _ahora.hour < 4):
         send_telegram(
             '📊 *BTC Risk Bands — resumen semanal*\n'
             f"Dias monitoreados: {len(out)}\n"

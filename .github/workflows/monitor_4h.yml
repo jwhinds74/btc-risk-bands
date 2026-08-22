@@ -1,0 +1,41 @@
+name: BTC Risk Bands Monitor (4h)
+
+# Seis corridas al dia, una por barra cerrada de 4h (+5 min de margen para que
+# Binance publique el cierre). El objetivo de bajar a H4 es la VELOCIDAD DE
+# ADAPTACION: si el monitor siguiera corriendo una vez al dia, cinco de cada
+# seis bandas emitidas nunca se evaluarian y la ventaja desapareceria.
+on:
+  schedule:
+    - cron: '5 0,4,8,12,16,20 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:                    # evita que dos corridas se pisen en el push
+  group: monitor-4h
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    env:
+      BAR_INTERVAL: '4h'
+      ALERTS_NEWS: '0'          # la busqueda web solo en la corrida diaria
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: pip install pandas numpy requests scipy ruptures groq
+      - run: python monitor.py
+        env:
+          CRYPTOCOMPARE_API_KEY: ${{ secrets.CRYPTOCOMPARE_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      - run: |
+          git config user.name xgbit-bot
+          git config user.email bot@xgbit
+          git add monitoring/health_log_4h.csv monitoring/last_forecast_4h.json btc_ohlcv_cache_4h.csv || true
+          git commit -m "monitor 4h: $(date -u +'%F %H:%M')" || true
+          git pull --rebase --autostash || true
+          git push
