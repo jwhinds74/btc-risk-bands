@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 import requests
 from scipy import stats as sps
+from scipy.optimize import nnls
 
 try:
     import alerts as ALERTAS
@@ -67,7 +68,7 @@ def conditional_sigma(v):
 
 # Version del motor. CAMBIALA con cada modificacion del modelo: sin esto el
 # track record mezcla versiones y la cobertura acumulada deja de significar nada.
-MODEL_VERSION = 'HAR-RV-1.3'
+MODEL_VERSION = 'HAR-RV-1.6'
 
 ALERTS = []
 
@@ -171,14 +172,68 @@ def build_har_dataset(px):
 
 
 def fit_har(d_train):
+    """Ajuste con coeficientes NO NEGATIVOS (v1.6).
+
+    Con minimos cuadrados sin restriccion, la colinealidad entre los tres
+    componentes producia coeficientes diarios NEGATIVOS (b_d = -0,078 en
+    produccion): el modelo restaba la volatilidad de ayer justo cuando mas
+    deberia pesar. Restringir a no negativos es practica estandar en HAR por
+    esta razon. Si NNLS fallara, se cae a lstsq y se recorta a cero.
+    """
     A = np.c_[np.ones(len(d_train)), d_train[['rv_d', 'rv_w', 'rv_m']].values]
-    coef, *_ = np.linalg.lstsq(A, d_train['y'].values, rcond=None)
-    return coef
+    y = d_train['y'].values
+    try:
+        coef, _ = nnls(A, y)
+        return coef
+    except Exception:
+        coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+        return np.maximum(coef, 0.0)
 
 
 def predict_har(coef, d_rows):
     A = np.c_[np.ones(len(d_rows)), d_rows[['rv_d', 'rv_w', 'rv_m']].values]
     return np.maximum(A @ coef, EPS)
+
+
+
+
+# ---------------------------------------------------------------------------
+# PISO DE VOLATILIDAD REACTIVO (v1.6)
+# ---------------------------------------------------------------------------
+# Problema medido: tras un salto de volatilidad, el HAR tarda semanas en
+# absorberlo y la banda se queda corta. En pruebas sobre 8 semillas con shock
+# inyectado, la cobertura post-shock caia al 90,1%.
+#
+# Diagnostico: con volatilidad perfecta ("oraculo") la cobertura llegaba al
+# 100%, asi que el fallo era de ESTIMACION de volatilidad, no de deriva ni de
+# colas. Un piso EWMA de 10 dias resulto demasiado lento; el de 3 dias reacciona
+# a tiempo sin sobrecubrir en calma.
+#
+#   variante                cobertura shock   cobertura calma
+#   HAR solo                     90,1%             91,5%
+#   max(HAR, EWMA-10)            94,6%             92,5%
+#   max(HAR, EWMA-3)             95,2%             94,0%   <- elegida
+#   max(HAR, max RV 3d)          99,0%             96,7%   (sobrecubre)
+#
+# No predice nada: solo impide que el estimador se quede por debajo de lo que
+# el mercado ACABA de mostrar.
+VOL_FLOOR_SPAN = 3
+
+
+def piso_volatilidad(d, span=VOL_FLOOR_SPAN):
+    """EWMA corta de la volatilidad realizada, desplazada un dia (sin mirar t)."""
+    return d['rv'].ewm(span=span).mean().shift(1)
+
+
+def sigma_con_piso(sigma_har, d, idx=-1, span=VOL_FLOOR_SPAN):
+    """max(HAR, EWMA corta). Devuelve tambien si el piso estuvo activo."""
+    try:
+        piso = float(piso_volatilidad(d, span).iloc[idx])
+    except Exception:
+        return float(sigma_har), False
+    if not np.isfinite(piso) or piso <= 0:
+        return float(sigma_har), False
+    return (float(max(sigma_har, piso)), bool(piso > sigma_har))
 
 
 def emit_band(coef, d, z_pool, last_close, drift=0.0, n_sim=None, seed=None):
@@ -194,11 +249,12 @@ def emit_band(coef, d, z_pool, last_close, drift=0.0, n_sim=None, seed=None):
         'rv_w': float(d['rv'].iloc[-5:].mean()),
         'rv_m': float(d['rv'].iloc[-22:].mean()),
     }])
-    sigma = float(predict_har(coef, fila)[0])
+    sigma_har = float(predict_har(coef, fila)[0])
+    sigma, piso_activo = sigma_con_piso(sigma_har, d)
     z = rng.choice(np.asarray(z_pool, dtype=float), size=n_sim)
     precios = last_close * np.exp(drift + z * sigma)
     return (float(np.percentile(precios, 2.5)), float(np.percentile(precios, 97.5)),
-            float(np.median(precios)), sigma)
+            float(np.median(precios)), sigma, sigma_har, piso_activo)
 
 
 def ks_drift(d):
@@ -328,8 +384,11 @@ def main():
 
     # SIN DERIVA (v1.3): la banda se centra en el ultimo cierre. El termino de
     # deriva la desplazaba y sugeria direccion sin haber sido validado.
-    banda_lo, banda_hi, centro, sigma_cruda = emit_band(coef, d_fit, z_pool,
-                                                        last_close, drift=0.0)
+    banda_lo, banda_hi, centro, sigma_cruda, sigma_har_raw, piso_activo = emit_band(
+        coef, d_fit, z_pool, last_close, drift=0.0)
+    if piso_activo:
+        log(f'Piso de volatilidad ACTIVO: HAR daba {sigma_har_raw*100:.2f}%/dia, '
+            f'el piso EWMA-{VOL_FLOOR_SPAN} eleva a {sigma_cruda*100:.2f}%/dia')
     sigma_hoy = max(mz_a + mz_b * sigma_cruda, EPS)
     if sigma_cruda > EPS and abs(sigma_hoy - sigma_cruda) > 1e-9:
         _esc = sigma_hoy / sigma_cruda
@@ -402,6 +461,9 @@ def main():
         'sigma_hoy': round(sigma_hoy, 6),
         'mz_b': round(mz_b, 4),
         'train_window': int(len(d_fit)),
+        'sigma_har_crudo': round(sigma_har_raw, 6),
+        'piso_activo': bool(piso_activo),
+        'b_d': round(float(coef[1]), 4),
         'banda_lo_95_hoy': round(banda_lo, 2),
         'banda_hi_95_hoy': round(banda_hi, 2),
         'regimen_actual': regimen,
@@ -430,7 +492,8 @@ def main():
             'cobertura_rodante_90d', 'error_vol_medio_90d', 'error_vol_abs_90d',
             'regimen_actual', 'regimen_cambio', 'ks_drift_pvalue',
             'banda_lo_95', 'banda_hi_95', 'sigma_hoy', 'banda_lo_95_hoy',
-            'banda_hi_95_hoy', 'mz_b', 'train_window',
+            'banda_hi_95_hoy', 'mz_b', 'train_window', 'sigma_har_crudo',
+            'piso_activo', 'b_d',
             'riesgo_nivel', 'riesgo_capas', 'riesgo_shock', 'model_version', 'fuente']
     out = pd.concat([hist_log, pd.DataFrame([row])], ignore_index=True)
     out = out.reindex(columns=[c for c in cols if c in out.columns or c in row])

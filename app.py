@@ -279,6 +279,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import requests
 import ruptures as rpt
+from scipy.optimize import nnls
 
 try:
     import alerts as ALERTAS
@@ -637,15 +638,67 @@ def build_har_dataset(hist):
 
 
 def fit_har(d_train):
-    """Minimos cuadrados sobre los tres componentes. Cuatro parametros."""
+    """Ajuste con coeficientes NO NEGATIVOS (v1.6).
+
+    Sin la restriccion, la colinealidad entre componentes producia un coeficiente
+    diario NEGATIVO en produccion (b_d = -0,078): el modelo restaba la volatilidad
+    de ayer justo cuando mas deberia pesar, y la banda tardaba semanas en
+    reaccionar a un shock.
+    """
     A = np.c_[np.ones(len(d_train)), d_train[['rv_d', 'rv_w', 'rv_m']].values]
-    coef, *_ = np.linalg.lstsq(A, d_train['y'].values, rcond=None)
-    return coef
+    y = d_train['y'].values
+    try:
+        coef, _ = nnls(A, y)
+        return coef
+    except Exception:
+        coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+        return np.maximum(coef, 0.0)
 
 
 def predict_har(coef, d_rows):
     A = np.c_[np.ones(len(d_rows)), d_rows[['rv_d', 'rv_w', 'rv_m']].values]
     return np.maximum(A @ coef, EPS)
+
+
+
+
+# ---------------------------------------------------------------------------
+# PISO DE VOLATILIDAD REACTIVO (v1.6)
+# ---------------------------------------------------------------------------
+# Problema medido: tras un salto de volatilidad, el HAR tarda semanas en
+# absorberlo y la banda se queda corta. En pruebas sobre 8 semillas con shock
+# inyectado, la cobertura post-shock caia al 90,1%.
+#
+# Diagnostico: con volatilidad perfecta ("oraculo") la cobertura llegaba al
+# 100%, asi que el fallo era de ESTIMACION de volatilidad, no de deriva ni de
+# colas. Un piso EWMA de 10 dias resulto demasiado lento; el de 3 dias reacciona
+# a tiempo sin sobrecubrir en calma.
+#
+#   variante                cobertura shock   cobertura calma
+#   HAR solo                     90,1%             91,5%
+#   max(HAR, EWMA-10)            94,6%             92,5%
+#   max(HAR, EWMA-3)             95,2%             94,0%   <- elegida
+#   max(HAR, max RV 3d)          99,0%             96,7%   (sobrecubre)
+#
+# No predice nada: solo impide que el estimador se quede por debajo de lo que
+# el mercado ACABA de mostrar.
+VOL_FLOOR_SPAN = 3
+
+
+def piso_volatilidad(d, span=VOL_FLOOR_SPAN):
+    """EWMA corta de la volatilidad realizada, desplazada un dia (sin mirar t)."""
+    return d['rv'].ewm(span=span).mean().shift(1)
+
+
+def sigma_con_piso(sigma_har, d, idx=-1, span=VOL_FLOOR_SPAN):
+    """max(HAR, EWMA corta). Devuelve tambien si el piso estuvo activo."""
+    try:
+        piso = float(piso_volatilidad(d, span).iloc[idx])
+    except Exception:
+        return float(sigma_har), False
+    if not np.isfinite(piso) or piso <= 0:
+        return float(sigma_har), False
+    return (float(max(sigma_har, piso)), bool(piso > sigma_har))
 
 
 def har_forecast_path(coef, d, days):
@@ -656,6 +709,7 @@ def har_forecast_path(coef, d, days):
     que corrompia la recursion en la version anterior.
     """
     rv_hist = list(d['rv'].values)
+    piso = float(piso_volatilidad(d).iloc[-1]) if len(d) else 0.0
     out = []
     for _ in range(days):
         fila = pd.DataFrame([{
@@ -664,8 +718,11 @@ def har_forecast_path(coef, d, days):
             'rv_m': float(np.mean(rv_hist[-22:])),
         }])
         p = float(predict_har(coef, fila)[0])
+        if np.isfinite(piso) and piso > p:
+            p = piso          # piso reactivo: solo en el primer paso importa mas
         out.append(p)
         rv_hist.append(p)
+        piso = 0.0            # a partir del dia 2 manda la dinamica del HAR
     return np.array(out)
 
 
