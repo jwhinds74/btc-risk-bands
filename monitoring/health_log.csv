@@ -1,8 +1,9 @@
-fecha,cierre,dentro_banda_95,sigma_emitida,error_vol_%,cobertura_rodante_90d,error_vol_medio_90d,error_vol_abs_90d,regimen_actual,regimen_cambio,ks_drift_pvalue,banda_lo_95,banda_hi_95,sigma_hoy,banda_lo_95_hoy,banda_hi_95_hoy,fuente
-2026-08-14,62983.61,,,,,,,estable(195d),False,0.0,,,0.014201,61281.81,64782.06,CryptoCompare
-2026-08-15,63026.52,1.0,0.014201,-81.4,100.0,-81.4,81.4,estable(195d),False,0.0,61281.81,64782.06,0.0115,61642.35,64564.95,CryptoCompare
-2026-08-16,62838.49,1.0,0.0115,-44.5,100.0,-63.0,63.0,estable(195d),False,0.0,61642.35,64564.95,0.012037,61092.04,64443.08,CryptoCompare
-2026-08-17,64484.37,0.0,0.012037,46.8,66.7,-26.4,57.6,estable(200d),False,0.0,61092.04,64443.08,0.015096,62638.55,66520.37,CryptoCompare
-2026-08-18,64686.57,1.0,0.015096,-37.0,75.0,-29.0,52.4,estable(200d),False,0.0,62638.55,66520.37,0.012999,63071.8,66425.76,CryptoCompare
-2026-08-19,69299.42,0.0,0.012999,306.8,60.0,38.1,103.3,estable(200d),False,0.0,63071.8,66425.76,0.025971,65386.83,73192.47,CryptoCompare
-2026-08-20,73009.6,1.0,0.025971,46.9,66.7,39.6,93.9,estable(200d),False,0.0,65386.83,73192.47,0.025039,69674.85,76971.41,CryptoCompare
+fecha,cierre,dentro_banda_95,sigma_emitida,error_vol_%,cobertura_rodante_90d,error_vol_medio_90d,error_vol_abs_90d,regimen_actual,regimen_cambio,ks_drift_pvalue,banda_lo_95,banda_hi_95,sigma_hoy,banda_lo_95_hoy,banda_hi_95_hoy,mz_b,train_window,sigma_har_crudo,piso_activo,b_d,riesgo_nivel,riesgo_capas,riesgo_shock,model_version,fuente
+2026-08-14,62983.61,,,,,,,estable(195d),False,0.0,,,0.014201,61281.81,64782.06,,,,,,,,,,CryptoCompare
+2026-08-15,63026.52,1.0,0.014201,-81.4,100.0,-81.4,81.4,estable(195d),False,0.0,61281.81,64782.06,0.0115,61642.35,64564.95,,,,,,,,,,CryptoCompare
+2026-08-16,62838.49,1.0,0.0115,-44.5,100.0,-63.0,63.0,estable(195d),False,0.0,61642.35,64564.95,0.012037,61092.04,64443.08,,,,,,,,,,CryptoCompare
+2026-08-17,64484.37,0.0,0.012037,46.8,66.7,-26.4,57.6,estable(200d),False,0.0,61092.04,64443.08,0.015096,62638.55,66520.37,,,,,,,,,,CryptoCompare
+2026-08-18,64686.57,1.0,0.015096,-37.0,75.0,-29.0,52.4,estable(200d),False,0.0,62638.55,66520.37,0.012999,63071.8,66425.76,,,,,,,,,,CryptoCompare
+2026-08-19,69299.42,0.0,0.012999,306.8,60.0,38.1,103.3,estable(200d),False,0.0,63071.8,66425.76,0.025971,65386.83,73192.47,,,,,,,,,,CryptoCompare
+2026-08-20,73009.6,1.0,0.025971,46.9,66.7,39.6,93.9,estable(200d),False,0.0,65386.83,73192.47,0.025039,69674.85,76971.41,,,,,,,,,,CryptoCompare
+2026-08-21,78329.69,0.0,0.025039,103.6,57.1,48.7,95.3,estable(200d),False,0.0,69674.85,76971.41,0.034852,73307.54,84855.44,1.0374,750.0,0.031571,True,0.2792,ninguno,0.0,2.04,HAR-RV-1.6,CryptoCompare
