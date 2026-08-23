@@ -464,6 +464,27 @@ def calculate_adaptive_split(n_samples):
 # paralelo. Los componentes del HAR estan definidos en DIAS (1/5/22) y hay que
 # traducirlos a barras: a 4h, "un mes" son 132 barras, no 22.
 # ---------------------------------------------------------------------------
+def ejes_tiempo(n_barras=None):
+    """Formato de eje X segun la temporalidad activa.
+
+    A barra diaria basta con la fecha; a 4h hay que mostrar la HORA o el eje
+    resulta ilegible (varias barras comparten el mismo dia). El espaciado se
+    calcula para que salgan ~8 marcas, sea cual sea el rango.
+    """
+    b = bar_actual()
+    if b == '1d':
+        return dict(tickformat='%d %b', nticks=8)
+    horas = int(b.replace('h', ''))
+    if n_barras and n_barras > 60:
+        return dict(tickformat='%d %b<br>%H:%M', nticks=8)
+    return dict(tickformat='%d %b<br>%H:%M', dtick=horas * 3600000 * max(1, (n_barras or 12) // 8))
+
+
+LEYENDA_ABAJO = dict(orientation='h', yanchor='top', y=-0.22,
+                     xanchor='center', x=0.5,
+                     bgcolor='rgba(90,90,90,0.65)', bordercolor='#707070',
+                     borderwidth=1, font=dict(size=11))
+
 # La frecuencia la elige el usuario en el sidebar, como en una plataforma de
 # trading. Todo lo que depende de ella se deriva mediante funciones y no como
 # constantes de modulo, porque el valor puede cambiar entre reruns.
@@ -558,8 +579,15 @@ def _fetch_cryptocompare(toTs_param, bar='1d'):
         # limit=2000 con aggregate=4 -> 2000 velas de 4h = 333 dias. Tres paginas
         # cubren ~1000 dias, mas que la ventana de entrenamiento de 750.
         params = {"fsym": "BTC", "tsym": "USD", "limit": 2000, "aggregate": agg}
-        paginas = 3
+        # ~250 velas por pagina: 22 paginas cubren ~5.500 velas de 4h (~900 dias).
+        paginas = 22
 
+    # OJO: en /histohour el parametro `limit` cuenta HORAS, no velas agregadas.
+    # Con aggregate=8 y limit=2000 la API devuelve ~250 filas, no 2000. Comparar
+    # len(bloque) contra `limit` rompia el bucle en la primera pagina y dejaba
+    # el intradia con una fraccion de la historia pedida (251 velas en vez de
+    # miles), lo que degradaba cobertura y QLIKE sin causa aparente.
+    esperado = max(1, params["limit"] // agg)
     marcos, to_ts = [], toTs_param
     for _ in range(paginas):
         p = dict(params)
@@ -575,7 +603,7 @@ def _fetch_cryptocompare(toTs_param, bar='1d'):
             break
         marcos.append(bloque)
         to_ts = int(bloque['time'].min()) - 1
-        if len(bloque) < params["limit"]:
+        if len(bloque) < esperado * 0.9:      # solo corta si la API agoto historia
             break
 
     if not marcos:
@@ -1511,8 +1539,8 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
             fig.add_vline(x=hist_regime.index[-1], line=dict(color='#CC4444', dash='dash', width=2),
                           annotation_text='Hoy (UTC)')
             fig.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                              font=dict(color='#FFFFFF'), hovermode='x unified', height=470,
-                              margin=dict(l=60, r=20, t=30, b=50),
+                              font=dict(color='#FFFFFF'), hovermode='x unified', height=500,
+                              margin=dict(l=60, r=20, t=30, b=115),
                               xaxis=dict(title='Fecha', showgrid=False),
                               yaxis=dict(title='Precio (USD)', showgrid=False, tickformat='$,.0f'),
                               legend=dict(bgcolor='rgba(90,90,90,.8)'))
@@ -1680,10 +1708,11 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                             fma.add_trace(go.Scatter(x=w.index, y=sv, name=n_,
                                                      line=dict(color=c_, width=1.5)))
                     fma.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                                      font=dict(color='#FFF'), height=400, hovermode='x unified',
-                                      margin=dict(l=60, r=20, t=20, b=50),
+                                      font=dict(color='#FFF'), height=430, hovermode='x unified',
+                                      margin=dict(l=60, r=20, t=20, b=115),
                                       yaxis=dict(tickformat='$,.0f', showgrid=False),
-                                      xaxis=dict(showgrid=False))
+                                      xaxis=dict(title='', showgrid=False, **ejes_tiempo(len(w))),
+                                      legend=LEYENDA_ABAJO)
                     st.plotly_chart(fma, use_container_width=True)
 
             # --- contexto de mercado ---
@@ -1755,10 +1784,11 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                     figr.add_vline(x=hist.index[min(bp, len(hist) - 1)],
                                    line=dict(color='#F5A05A', dash='dash', width=1))
                 figr.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                                   font=dict(color='#FFF'), height=420, hovermode='x unified',
-                                   margin=dict(l=60, r=20, t=20, b=50),
+                                   font=dict(color='#FFF'), height=450, hovermode='x unified',
+                                   margin=dict(l=60, r=20, t=20, b=115),
                                    yaxis=dict(tickformat='$,.0f', showgrid=False),
-                                   xaxis=dict(showgrid=False))
+                                   xaxis=dict(title='', showgrid=False, **ejes_tiempo(len(hist))),
+                                   legend=LEYENDA_ABAJO)
                 st.plotly_chart(figr, use_container_width=True)
                 st.dataframe(rs, use_container_width=True, hide_index=True)
                 st.caption("Los quiebres se detectan con PELT sobre la serie de precios. "
@@ -1831,10 +1861,11 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                                       name='HAR-RV', mode='lines',
                                       line=dict(color=COLOR_FORECAST, width=2)))
             figv.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                               font=dict(color='#FFF'), height=380, hovermode='x unified',
-                               margin=dict(l=60, r=20, t=20, b=50),
-                               yaxis=dict(title='vol diaria (%)', showgrid=False),
-                               xaxis=dict(showgrid=False))
+                               font=dict(color='#FFF'), height=410, hovermode='x unified',
+                               margin=dict(l=60, r=20, t=20, b=115),
+                               yaxis=dict(title='vol por barra (%)', showgrid=False),
+                               xaxis=dict(title='', showgrid=False, **ejes_tiempo(len(st.session_state['val_dates']))),
+                               legend=LEYENDA_ABAJO)
             st.plotly_chart(figv, use_container_width=True)
             st.caption("Aquí la línea SÍ debe seguir a la realidad: la volatilidad, a diferencia de "
                        "la dirección, es predecible. Ese contraste resume por qué este producto "
@@ -1919,10 +1950,11 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                                                   name='Fuera de banda',
                                                   marker=dict(color='#FF4444', size=9, symbol='x')))
                 figt.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                                   font=dict(color='#FFF'), height=420, hovermode='x unified',
-                                   margin=dict(l=60, r=20, t=20, b=50),
+                                   font=dict(color='#FFF'), height=450, hovermode='x unified',
+                                   margin=dict(l=60, r=20, t=20, b=115),
                                    yaxis=dict(tickformat='$,.0f', showgrid=False),
-                                   xaxis=dict(showgrid=False))
+                                   xaxis=dict(title='', showgrid=False, **ejes_tiempo(len(p))),
+                                   legend=LEYENDA_ABAJO)
                 st.plotly_chart(figt, use_container_width=True)
                 st.dataframe(hl.tail(15).iloc[::-1], use_container_width=True, hide_index=True)
 

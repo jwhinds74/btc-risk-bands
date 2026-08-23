@@ -123,7 +123,12 @@ def fetch_prices():
             url = 'https://min-api.cryptocompare.com/data/v2/histohour'
             base = {'fsym': 'BTC', 'tsym': 'USD', 'limit': 2000,
                     'aggregate': int(CONFIG['BAR'].replace('h', ''))}
-            paginas = 4
+            paginas = 22    # ~250 velas/pagina -> ~5.500 velas de 4h (~900 dias)
+        # `limit` en /histohour cuenta HORAS, no velas agregadas: con aggregate=8
+        # devuelve ~250 filas para limit=2000. Cortar comparando contra `limit`
+        # dejaba el intradia con una fraccion de la historia.
+        _agg = base.get('aggregate', 1)
+        esperado = max(1, base['limit'] // _agg)
         marcos, to_ts = [], None
         for _ in range(paginas):
             p = dict(base)
@@ -139,7 +144,7 @@ def fetch_prices():
                 break
             marcos.append(blo)
             to_ts = int(blo['time'].min()) - 1
-            if len(blo) < base['limit']:
+            if len(blo) < esperado * 0.9:
                 break
         if not marcos:
             raise RuntimeError('CryptoCompare devolvio 0 velas')
