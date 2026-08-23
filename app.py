@@ -537,20 +537,81 @@ def _get_cc_api_key():
     return ""
 
 
-def _fetch_cryptocompare(toTs_param):
-    url = "https://min-api.cryptocompare.com/data/v2/histoday"
-    params = {"fsym": "BTC", "tsym": "USD", "limit": 2000, "toTs": toTs_param}
+def _fetch_cryptocompare(toTs_param, bar='1d'):
+    """OHLC desde CryptoCompare. Soporta barra diaria e intradiaria.
+
+    El endpoint /histohour acepta `aggregate` (1-30), asi que 4h y 8h se piden
+    directamente sin construirlas a mano. Es la unica de nuestras fuentes que
+    responde de forma fiable desde servidores estadounidenses, que es donde
+    corren Streamlit Cloud y GitHub Actions.
+    """
     api_key = _get_cc_api_key()
     headers = {"authorization": f"Apikey {api_key}"} if api_key else {}
-    response = requests.get(url, params=params, headers=headers, timeout=30)
-    response.raise_for_status()
-    data = response.json()
-    if data.get("Response") != "Success":
-        raise RuntimeError(f"CryptoCompare respondio: {data.get('Message', 'sin detalle')}")
-    hist = pd.DataFrame(data["Data"]["Data"])
+
+    if bar == '1d':
+        url = "https://min-api.cryptocompare.com/data/v2/histoday"
+        params = {"fsym": "BTC", "tsym": "USD", "limit": 2000, "toTs": toTs_param}
+        paginas, agg = 1, 1
+    else:
+        agg = int(bar.replace('h', ''))
+        url = "https://min-api.cryptocompare.com/data/v2/histohour"
+        # limit=2000 con aggregate=4 -> 2000 velas de 4h = 333 dias. Tres paginas
+        # cubren ~1000 dias, mas que la ventana de entrenamiento de 750.
+        params = {"fsym": "BTC", "tsym": "USD", "limit": 2000, "aggregate": agg}
+        paginas = 3
+
+    marcos, to_ts = [], toTs_param
+    for _ in range(paginas):
+        p = dict(params)
+        if to_ts:
+            p["toTs"] = int(to_ts)
+        r = requests.get(url, params=p, headers=headers, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("Response") != "Success":
+            raise RuntimeError(f"CryptoCompare respondio: {data.get('Message', 'sin detalle')}")
+        bloque = pd.DataFrame(data["Data"]["Data"])
+        if bloque.empty:
+            break
+        marcos.append(bloque)
+        to_ts = int(bloque['time'].min()) - 1
+        if len(bloque) < params["limit"]:
+            break
+
+    if not marcos:
+        raise RuntimeError("CryptoCompare devolvio 0 velas")
+
+    hist = pd.concat(marcos, ignore_index=True)
     hist['timestamp'] = pd.to_datetime(hist['time'], unit='s')
     hist = hist[['timestamp', 'close', 'high', 'low']].set_index('timestamp')
+    hist = hist[~hist.index.duplicated(keep='last')].sort_index()
+    # Velas con precio 0 aparecen en tramos sin datos: se descartan porque
+    # arruinarian el estimador de Parkinson (log(0) -> -inf).
+    hist = hist[(hist[['close', 'high', 'low']] > 0).all(axis=1)]
     return hist.astype(float)
+
+
+def _fetch_kraken(bar='1d'):
+    """Respaldo intradia: Kraken responde desde EE.UU. y no exige API key.
+
+    Devuelve como maximo 720 velas, asi que a 4h cubre ~120 dias. Es poco para
+    entrenar, pero suficiente para que la app no muera si las otras dos fuentes
+    fallan a la vez.
+    """
+    intervalos = {'1d': 1440, '8h': 480, '4h': 240, '1h': 60}
+    r = requests.get('https://api.kraken.com/0/public/OHLC',
+                     params={'pair': 'XBTUSD', 'interval': intervalos.get(bar, 1440)},
+                     timeout=25)
+    r.raise_for_status()
+    j = r.json()
+    if j.get('error'):
+        raise RuntimeError(f"Kraken: {j['error']}")
+    clave = [k for k in j['result'] if k != 'last'][0]
+    d = pd.DataFrame(j['result'][clave],
+                     columns=['t', 'open', 'high', 'low', 'close', 'vwap', 'vol', 'n'])
+    d['timestamp'] = pd.to_datetime(d['t'], unit='s')
+    d = d.set_index('timestamp')[['close', 'high', 'low']].astype(float)
+    return d[~d.index.duplicated(keep='last')].sort_index()
 
 
 def _fetch_binance_klines(symbol="BTCUSDT"):
@@ -584,19 +645,25 @@ def fetch_btc_data(toTs_param, bar_key='1d'):
     Devuelve (hist, source) para mostrar en la UI que fuente respondio.
     """
     hist, source, errors = None, None, []
+    _bar = bar_actual()
+    # Jerarquia: CryptoCompare (unica fiable desde EE.UU.) -> Binance (bloquea
+    # IPs de EE.UU., pero funciona en local) -> Kraken -> cache.
     try:
-        if bar_actual() != '1d':
-            raise RuntimeError('intradia: se usa Binance')
-        hist = _fetch_cryptocompare(toTs_param)
-        source = "CryptoCompare"
+        hist = _fetch_cryptocompare(toTs_param, _bar)
+        source = f"CryptoCompare ({_bar})"
     except Exception as e:
         errors.append(f"CryptoCompare: {type(e).__name__}")
         try:
             hist = _fetch_binance_klines("BTCUSDT")
-            source = "Binance (klines)"
+            source = f"Binance klines ({_bar})"
         except Exception as e2:
             errors.append(f"Binance: {type(e2).__name__}")
-            if os.path.exists(archivo_cache()):
+            try:
+                hist = _fetch_kraken(_bar)
+                source = f"Kraken ({_bar})"
+            except Exception as e3:
+                errors.append(f"Kraken: {type(e3).__name__}")
+            if hist is None and os.path.exists(archivo_cache()):
                 cached = pd.read_csv(archivo_cache(), parse_dates=[0], index_col=0)
                 cols = [c for c in ['close', 'high', 'low'] if c in cached.columns]
                 hist = cached[cols].astype(float)
@@ -605,11 +672,15 @@ def fetch_btc_data(toTs_param, bar_key='1d'):
                 if 'low' not in hist.columns:
                     hist['low'] = hist['close']
                 source = f"cache local ({archivo_cache()})"
+            elif hist is None:
+                pass
 
     if hist is None or len(hist) == 0:
         raise RuntimeError(
-            "Sin datos de precio: fallaron todas las fuentes "
-            f"({'; '.join(errors)}) y no hay cache local."
+            f"Sin datos de precio para barra {_bar}: fallaron todas las fuentes "
+            f"({'; '.join(errors)}) y no hay cache local. "
+            "Nota: Binance bloquea IPs de EE.UU., donde corre Streamlit Cloud; "
+            "para intradia se usa CryptoCompare (endpoint horario con agregacion)."
         )
 
     hist = hist.sort_index()

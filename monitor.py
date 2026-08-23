@@ -110,21 +110,45 @@ def fetch_prices():
     df, source = None, None
     key = os.environ.get('CRYPTOCOMPARE_API_KEY', '')
     # CryptoCompare solo se usa para barra diaria; a intradia se va directo a Binance.
+    # CryptoCompare es la unica fuente fiable desde los runners de GitHub
+    # (alojados en EE.UU., donde Binance bloquea). Para intradia se usa el
+    # endpoint horario con `aggregate`, que devuelve velas de 4h u 8h directas.
     try:
-        if CONFIG['BAR'] != '1d':
-            raise RuntimeError('intradia: se usa Binance')
-        p = {'fsym': 'BTC', 'tsym': 'USD', 'limit': 2000}
         headers = {'authorization': f'Apikey {key}'} if key else {}
-        r = requests.get('https://min-api.cryptocompare.com/data/v2/histoday',
-                         params=p, headers=headers, timeout=20)
-        r.raise_for_status()
-        j = r.json()
-        if j.get('Response') != 'Success':
-            raise RuntimeError(j.get('Message', 'respuesta inesperada'))
-        d = pd.DataFrame(j['Data']['Data'])
+        if CONFIG['BAR'] == '1d':
+            url = 'https://min-api.cryptocompare.com/data/v2/histoday'
+            base = {'fsym': 'BTC', 'tsym': 'USD', 'limit': 2000}
+            paginas = 1
+        else:
+            url = 'https://min-api.cryptocompare.com/data/v2/histohour'
+            base = {'fsym': 'BTC', 'tsym': 'USD', 'limit': 2000,
+                    'aggregate': int(CONFIG['BAR'].replace('h', ''))}
+            paginas = 4
+        marcos, to_ts = [], None
+        for _ in range(paginas):
+            p = dict(base)
+            if to_ts:
+                p['toTs'] = int(to_ts)
+            r = requests.get(url, params=p, headers=headers, timeout=25)
+            r.raise_for_status()
+            j = r.json()
+            if j.get('Response') != 'Success':
+                raise RuntimeError(j.get('Message', 'respuesta inesperada'))
+            blo = pd.DataFrame(j['Data']['Data'])
+            if blo.empty:
+                break
+            marcos.append(blo)
+            to_ts = int(blo['time'].min()) - 1
+            if len(blo) < base['limit']:
+                break
+        if not marcos:
+            raise RuntimeError('CryptoCompare devolvio 0 velas')
+        d = pd.concat(marcos, ignore_index=True)
         d['timestamp'] = pd.to_datetime(d['time'], unit='s')
         df = d.set_index('timestamp')[['close', 'high', 'low']].astype(float)
-        source = 'CryptoCompare'
+        df = df[~df.index.duplicated(keep='last')].sort_index()
+        df = df[(df > 0).all(axis=1)]          # descarta velas vacias (log(0))
+        source = f"CryptoCompare ({CONFIG['BAR']})"
     except Exception as e:
         log(f'CryptoCompare no disponible ({type(e).__name__}) -> Binance')
         try:
