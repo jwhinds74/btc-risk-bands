@@ -464,13 +464,57 @@ def calculate_adaptive_split(n_samples):
 # paralelo. Los componentes del HAR estan definidos en DIAS (1/5/22) y hay que
 # traducirlos a barras: a 4h, "un mes" son 132 barras, no 22.
 # ---------------------------------------------------------------------------
-BAR = os.environ.get('BAR_INTERVAL', '1d')          # '1d' | '4h' | '8h'
-_BPD = {'1d': 1, '8h': 3, '4h': 6}.get(BAR, 1)
-_SUF = '' if BAR == '1d' else f'_{BAR}'
-HAR_W, HAR_M = 5 * _BPD, 22 * _BPD
-HEALTH_LOG_FILE = f'monitoring/health_log{_SUF}.csv'
+# La frecuencia la elige el usuario en el sidebar, como en una plataforma de
+# trading. Todo lo que depende de ella se deriva mediante funciones y no como
+# constantes de modulo, porque el valor puede cambiar entre reruns.
+BARRAS = {
+    '1d': {'bpd': 1,  'etq': 'D1', 'nombre': 'Diario'},
+    '8h': {'bpd': 3,  'etq': 'H8', 'nombre': '8 horas'},
+    '4h': {'bpd': 6,  'etq': 'H4', 'nombre': '4 horas'},
+}
+BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
 
-PRICE_CACHE_FILE = f"btc_ohlcv_cache{_SUF}.csv"  # mismo cache que escribe collect_data.py
+
+def bar_actual():
+    return st.session_state.get('bar', BAR_DEFECTO)
+
+
+def bpd():
+    """Barras por dia de la frecuencia activa."""
+    return BARRAS.get(bar_actual(), BARRAS['1d'])['bpd']
+
+
+def sufijo():
+    b = bar_actual()
+    return '' if b == '1d' else f'_{b}'
+
+
+def har_ventanas():
+    """Componentes semanal y mensual del HAR, EN BARRAS.
+
+    Corsi los define en dias (1/5/22). A barra intradiaria hay que traducirlos:
+    a 4h, 'un mes' son 132 barras. Dejarlos en 22 convertiria el componente
+    mensual en uno de 3,7 dias.
+    """
+    k = bpd()
+    return 5 * k, 22 * k
+
+
+def archivo_cache():
+    return f'btc_ohlcv_cache{sufijo()}.csv'
+
+
+def archivo_health_log():
+    return f'monitoring/health_log{sufijo()}.csv'
+
+
+# Compatibilidad con el codigo existente (se resuelven en cada rerun)
+BAR = BAR_DEFECTO
+_BPD = BARRAS[BAR_DEFECTO]['bpd']
+HAR_W, HAR_M = 5 * _BPD, 22 * _BPD
+HEALTH_LOG_FILE = f'monitoring/health_log{"" if BAR_DEFECTO == "1d" else "_" + BAR_DEFECTO}.csv'
+
+PRICE_CACHE_FILE = f"btc_ohlcv_cache{'' if BAR_DEFECTO == '1d' else '_' + BAR_DEFECTO}.csv"
 
 
 def _get_cc_api_key():
@@ -533,7 +577,7 @@ def _fetch_binance_klines(symbol="BTCUSDT"):
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def fetch_btc_data(toTs_param):
+def fetch_btc_data(toTs_param, bar_key='1d'):
     """BTC OHLC — jerarquia V5: CryptoCompare -> Binance klines -> cache local.
 
     Solo velas CERRADAS (hasta ayer UTC). Cacheado por dia UTC (ttl=24h).
@@ -541,7 +585,7 @@ def fetch_btc_data(toTs_param):
     """
     hist, source, errors = None, None, []
     try:
-        if BAR != '1d':
+        if bar_actual() != '1d':
             raise RuntimeError('intradia: se usa Binance')
         hist = _fetch_cryptocompare(toTs_param)
         source = "CryptoCompare"
@@ -552,15 +596,15 @@ def fetch_btc_data(toTs_param):
             source = "Binance (klines)"
         except Exception as e2:
             errors.append(f"Binance: {type(e2).__name__}")
-            if os.path.exists(PRICE_CACHE_FILE):
-                cached = pd.read_csv(PRICE_CACHE_FILE, parse_dates=[0], index_col=0)
+            if os.path.exists(archivo_cache()):
+                cached = pd.read_csv(archivo_cache(), parse_dates=[0], index_col=0)
                 cols = [c for c in ['close', 'high', 'low'] if c in cached.columns]
                 hist = cached[cols].astype(float)
                 if 'high' not in hist.columns:
                     hist['high'] = hist['close']
                 if 'low' not in hist.columns:
                     hist['low'] = hist['close']
-                source = f"cache local ({PRICE_CACHE_FILE})"
+                source = f"cache local ({archivo_cache()})"
 
     if hist is None or len(hist) == 0:
         raise RuntimeError(
@@ -571,18 +615,19 @@ def fetch_btc_data(toTs_param):
     hist = hist.sort_index()
     if source in ("CryptoCompare", "Binance (klines)"):
         try:
-            hist.to_csv(PRICE_CACHE_FILE)
+            hist.to_csv(archivo_cache())
         except Exception:
             pass
 
     # Solo barras CERRADAS: se descarta la barra en curso, sea de 24h o de 4h.
     _ahora = pd.Timestamp(datetime.now(timezone.utc)).tz_localize(None)
-    if BAR == '1d':
+    _bar = bar_actual()
+    if _bar == '1d':
         _corte = pd.Timestamp(_ahora.date())
     else:
-        _corte = _ahora.floor(f"{int(BAR.replace('h',''))}h")
+        _corte = _ahora.floor(f"{int(_bar.replace('h',''))}h")
     hist = hist[hist.index < _corte]
-    return hist.tail(1000 if BAR == '1d' else 6000), source
+    return hist.tail(1000 if _bar == '1d' else 6000), source
 
 def conditional_sigma(vol_series):
     """Volatilidad condicional saneada: sin ceros ni valores absurdamente bajos.
@@ -649,8 +694,9 @@ def build_har_dataset(hist):
     d['ret'] = np.log(hist['close']).diff()
     d['rv'] = parkinson_rv(hist)
     d['rv_d'] = d['rv'].shift(1)
-    d['rv_w'] = d['rv'].rolling(HAR_W).mean().shift(1)
-    d['rv_m'] = d['rv'].rolling(HAR_M).mean().shift(1)
+    _w, _m = har_ventanas()
+    d['rv_w'] = d['rv'].rolling(_w).mean().shift(1)
+    d['rv_m'] = d['rv'].rolling(_m).mean().shift(1)
     d['y'] = d['rv']                      # objetivo: la RV del propio dia t
     return d.dropna()
 
@@ -700,15 +746,18 @@ def predict_har(coef, d_rows):
 #
 # No predice nada: solo impide que el estimador se quede por debajo de lo que
 # el mercado ACABA de mostrar.
-VOL_FLOOR_SPAN = 3 * _BPD    # 3 DIAS de memoria, no 3 barras
+def vol_floor_span():
+    """3 DIAS de memoria, expresados en barras."""
+    return 3 * bpd()
 
 
-def piso_volatilidad(d, span=VOL_FLOOR_SPAN):
-    """EWMA corta de la volatilidad realizada, desplazada un dia (sin mirar t)."""
+def piso_volatilidad(d, span=None):
+    """EWMA corta de la volatilidad realizada, desplazada un paso (sin mirar t)."""
+    span = span or vol_floor_span()
     return d['rv'].ewm(span=span).mean().shift(1)
 
 
-def sigma_con_piso(sigma_har, d, idx=-1, span=VOL_FLOOR_SPAN):
+def sigma_con_piso(sigma_har, d, idx=-1, span=None):
     """max(HAR, EWMA corta). Devuelve tambien si el piso estuvo activo."""
     try:
         piso = float(piso_volatilidad(d, span).iloc[idx])
@@ -732,8 +781,8 @@ def har_forecast_path(coef, d, days):
     for _ in range(days):
         fila = pd.DataFrame([{
             'rv_d': rv_hist[-1],
-            'rv_w': float(np.mean(rv_hist[-HAR_W:])),
-            'rv_m': float(np.mean(rv_hist[-HAR_M:])),
+            'rv_w': float(np.mean(rv_hist[-har_ventanas()[0]:])),
+            'rv_m': float(np.mean(rv_hist[-har_ventanas()[1]:])),
         }])
         p = float(predict_har(coef, fila)[0])
         if np.isfinite(piso) and piso > p:
@@ -889,20 +938,55 @@ with st.sidebar:
 
     st.header("⚙️ Configuración")
 
-    days = st.slider(f"{'Días' if BAR == '1d' else 'Barras'} a proyectar", 1, 14, 7,
+    # ------------------------------------------------------------------
+    # SELECTOR DE TEMPORALIDAD (estilo plataforma de trading).
+    # Cada frecuencia tiene su propio cache y su propio track record: los
+    # ficheros llevan sufijo. Mezclar evaluaciones de D1 y H4 en un mismo
+    # registro destruiria ambos.
+    # ------------------------------------------------------------------
+    _etqs = [v['etq'] for v in BARRAS.values()]
+    _claves = list(BARRAS.keys())
+    _idx = _claves.index(bar_actual()) if bar_actual() in _claves else 0
+    _sel = st.radio("Temporalidad", _etqs, index=_idx, horizontal=True,
+                    help="D1 es la versión validada y con track record en marcha. "
+                         "H4 y H8 son candidatas: cada una acumula su propio historial "
+                         "por separado, para poder compararlas con datos en vivo.")
+    _nuevo = _claves[_etqs.index(_sel)]
+    if _nuevo != bar_actual():
+        # Cambiar de temporalidad invalida el forecast en pantalla: son modelos
+        # distintos sobre datos distintos.
+        st.session_state['bar'] = _nuevo
+        st.session_state['listo'] = False
+        st.cache_data.clear()
+        st.rerun()
+    st.session_state['bar'] = _nuevo
+
+    _b = BARRAS[_nuevo]
+    st.caption(f"**{_b['nombre']}** · {_b['bpd']} barra(s)/día · "
+               f"HAR: {5*_b['bpd']}/{22*_b['bpd']} barras · "
+               f"track record: `health_log{sufijo() or ''}.csv`")
+    if _nuevo != '1d':
+        st.info(f"Temporalidad **{_b['etq']}** en evaluación. La versión validada es D1; "
+                "esta acumula su propio track record en paralelo para poder compararlas.")
+
+
+    _horas = 24 // bpd()
+    days = st.slider(
+        "Barras a proyectar" if bar_actual() != '1d' else "Días a proyectar",
+        1, 14, 7,
                      help="Horizonte de las bandas. El ancho crece con el horizonte: "
                           "es incertidumbre acumulada, no una predicción puntual.")
 
     regime_option = st.selectbox(
         "Ventana de entrenamiento",
-        [f"Producción ({750} días · {750*_BPD} barras)", "Actual (último régimen)",
+        [f"Producción (750 días · {750*bpd()} barras)", "Actual (último régimen)",
          "Actuales (últimos 2 regímenes)", "Todo el historial"], index=0,
         help="'Producción' usa exactamente la misma ventana que el monitor diario, así que las "
              "bandas de esta pantalla coinciden con las del track record. Las demás son "
              "exploratorias: con menos de ~500 días el componente mensual se estima con muy "
              "pocas ventanas independientes y la cobertura se degrada.")
 
-    TRAIN_WINDOW = 750 * _BPD   # debe coincidir con monitor.py (en barras)
+    TRAIN_WINDOW = 750 * bpd()   # debe coincidir con monitor.py (en barras)
 
     show_technical = st.checkbox(
         "Mostrar contexto técnico", value=True,
@@ -928,9 +1012,9 @@ with st.sidebar:
     st.markdown(
         "<div class='data-source-info'>"
         "<strong>Fuente:</strong> " + ("CryptoCompare &rarr; Binance &rarr; cache"
-                                       if BAR == '1d' else "Binance &rarr; cache") + "<br>"
+                                       if bar_actual() == '1d' else "Binance &rarr; cache") + "<br>"
         "<strong>Motor:</strong> HAR-RV (Corsi, 2009)<br>"
-        f"<strong>Barra:</strong> {BAR} &middot; UTC, solo cerradas"
+        f"<strong>Barra:</strong> {BARRAS[bar_actual()]['etq']} &middot; UTC, solo cerradas"
         "</div>", unsafe_allow_html=True)
 
     with st.expander("ℹ️ Sobre esta versión"):
@@ -1146,7 +1230,7 @@ if run_forecast:
     try:
         # --- 1. datos -------------------------------------------------------
         with st.spinner("📡 Descargando precios..."):
-            hist, data_source = fetch_btc_data(get_utc_midnight_timestamp())
+            hist, data_source = fetch_btc_data(get_utc_midnight_timestamp(), bar_actual())
             st.session_state['hist'] = hist
             st.session_state['data_source'] = data_source
         st.success(f"✅ {len(hist)} velas · fuente: {data_source} · "
@@ -1189,13 +1273,13 @@ if run_forecast:
 
         # Piso duro: por debajo de 250 observaciones el componente mensual tendria
         # menos de 11 ventanas independientes y el ajuste deja de ser fiable.
-        if len(hist_regime) < 250 * _BPD:
-            hist_regime = hist.tail(min(250 * _BPD, len(hist)))
+        if len(hist_regime) < 250 * bpd():
+            hist_regime = hist.tail(min(250 * bpd(), len(hist)))
 
         st.session_state['hist_regime'] = hist_regime
         st.session_state['train_window_used'] = len(hist_regime)
         regime_label = f"{len(hist_regime)} días de entrenamiento"
-        if len(hist_regime) < 500 * _BPD:
+        if len(hist_regime) < 500 * bpd():
             st.warning(
                 f"⚠️ Ventana corta ({len(hist_regime)} días). Con menos de ~500 observaciones "
                 "la cobertura de las bandas se degrada: en pruebas cayó al 87% frente al 95% "
@@ -1699,7 +1783,7 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                        "un commit de fecha inmutable: el historial del archivo en el repo ES la "
                        "prueba auditable del track record.")
             try:
-                hl = pd.read_csv(HEALTH_LOG_FILE, parse_dates=['fecha']).sort_values('fecha')
+                hl = pd.read_csv(archivo_health_log(), parse_dates=['fecha']).sort_values('fecha')
             except Exception:
                 hl = None
             if hl is None or len(hl) == 0:
