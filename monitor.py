@@ -21,6 +21,8 @@ import datetime as dt
 
 import numpy as np
 import pandas as pd
+import time
+
 import requests
 from scipy import stats as sps
 from scipy.optimize import nnls
@@ -129,23 +131,34 @@ def fetch_prices():
         # dejaba el intradia con una fraccion de la historia.
         _agg = base.get('aggregate', 1)
         esperado = max(1, base['limit'] // _agg)
-        marcos, to_ts = [], None
-        for _ in range(paginas):
-            p = dict(base)
-            if to_ts:
-                p['toTs'] = int(to_ts)
-            r = requests.get(url, params=p, headers=headers, timeout=25)
-            r.raise_for_status()
-            j = r.json()
-            if j.get('Response') != 'Success':
-                raise RuntimeError(j.get('Message', 'respuesta inesperada'))
-            blo = pd.DataFrame(j['Data']['Data'])
-            if blo.empty:
+        # RESILIENCIA (v2.1): se acumulan las paginas que respondan y se sigue
+        # adelante con lo obtenido si el plan gratuito corta por rate limit.
+        marcos, to_ts, fallos = [], None, []
+        for _pag in range(paginas):
+            try:
+                p = dict(base)
+                if to_ts:
+                    p['toTs'] = int(to_ts)
+                r = requests.get(url, params=p, headers=headers, timeout=25)
+                r.raise_for_status()
+                j = r.json()
+                if j.get('Response') != 'Success':
+                    raise RuntimeError(j.get('Message', 'respuesta inesperada'))
+                blo = pd.DataFrame(j['Data']['Data'])
+                if blo.empty:
+                    break
+                marcos.append(blo)
+                to_ts = int(blo['time'].min()) - 1
+                if len(blo) < esperado * 0.9:
+                    break
+                if CONFIG['BAR'] != '1d':
+                    time.sleep(0.25)
+            except Exception as _e:
+                fallos.append(f'p{_pag}:{type(_e).__name__}')
                 break
-            marcos.append(blo)
-            to_ts = int(blo['time'].min()) - 1
-            if len(blo) < esperado * 0.9:
-                break
+        if fallos:
+            log(f"CryptoCompare: paginacion interrumpida ({'; '.join(fallos)}); "
+                f'se usan {sum(len(x) for x in marcos)} velas acumuladas')
         if not marcos:
             raise RuntimeError('CryptoCompare devolvio 0 velas')
         d = pd.concat(marcos, ignore_index=True)

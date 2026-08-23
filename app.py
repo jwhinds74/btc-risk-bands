@@ -277,6 +277,7 @@ import os
 # Add src to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+import time
 import requests
 import ruptures as rpt
 from scipy.optimize import nnls
@@ -588,26 +589,39 @@ def _fetch_cryptocompare(toTs_param, bar='1d'):
     # el intradia con una fraccion de la historia pedida (251 velas en vez de
     # miles), lo que degradaba cobertura y QLIKE sin causa aparente.
     esperado = max(1, params["limit"] // agg)
-    marcos, to_ts = [], toTs_param
-    for _ in range(paginas):
-        p = dict(params)
-        if to_ts:
-            p["toTs"] = int(to_ts)
-        r = requests.get(url, params=p, headers=headers, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("Response") != "Success":
-            raise RuntimeError(f"CryptoCompare respondio: {data.get('Message', 'sin detalle')}")
-        bloque = pd.DataFrame(data["Data"]["Data"])
-        if bloque.empty:
-            break
-        marcos.append(bloque)
-        to_ts = int(bloque['time'].min()) - 1
-        if len(bloque) < esperado * 0.9:      # solo corta si la API agoto historia
-            break
+    minimo_util = 300 if bar != '1d' else 200      # velas por debajo de las cuales no sirve
+
+    # RESILIENCIA (v2.1). Con 22 paginas el plan gratuito de CryptoCompare acaba
+    # devolviendo error por limite de peticiones. Antes eso lanzaba excepcion y
+    # tiraba TODA la descarga, incluidas las paginas ya obtenidas. Ahora se
+    # acumula lo que se pueda y solo se falla si no alcanza el minimo util.
+    marcos, to_ts, fallos = [], toTs_param, []
+    for _pag in range(paginas):
+        try:
+            p = dict(params)
+            if to_ts:
+                p["toTs"] = int(to_ts)
+            r = requests.get(url, params=p, headers=headers, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("Response") != "Success":
+                raise RuntimeError(data.get('Message', 'sin detalle'))
+            bloque = pd.DataFrame(data["Data"]["Data"])
+            if bloque.empty:
+                break
+            marcos.append(bloque)
+            to_ts = int(bloque['time'].min()) - 1
+            if len(bloque) < esperado * 0.9:      # la API agoto historia
+                break
+            if bar != '1d':
+                time.sleep(0.25)                  # respiro entre peticiones
+        except Exception as _e:
+            fallos.append(f'p{_pag}:{type(_e).__name__}')
+            break                                 # nos quedamos con lo acumulado
 
     if not marcos:
-        raise RuntimeError("CryptoCompare devolvio 0 velas")
+        raise RuntimeError(
+            f"CryptoCompare no devolvio velas ({'; '.join(fallos) or 'respuesta vacia'})")
 
     hist = pd.concat(marcos, ignore_index=True)
     hist['timestamp'] = pd.to_datetime(hist['time'], unit='s')
@@ -616,6 +630,10 @@ def _fetch_cryptocompare(toTs_param, bar='1d'):
     # Velas con precio 0 aparecen en tramos sin datos: se descartan porque
     # arruinarian el estimador de Parkinson (log(0) -> -inf).
     hist = hist[(hist[['close', 'high', 'low']] > 0).all(axis=1)]
+    if len(hist) < minimo_util:
+        raise RuntimeError(
+            f"CryptoCompare solo devolvio {len(hist)} velas de {bar} "
+            f"(minimo util {minimo_util}); paginas fallidas: {'; '.join(fallos) or 'ninguna'}")
     return hist.astype(float)
 
 
