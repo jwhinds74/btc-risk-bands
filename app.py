@@ -532,7 +532,7 @@ BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
 
 # Marcador visible en el sidebar: permite confirmar de un vistazo que el
 # despliegue corresponde al archivo entregado, sin abrir el codigo.
-APP_VERSION = 'v2.8'
+APP_VERSION = 'v2.9'
 
 
 def bar_actual():
@@ -729,49 +729,53 @@ def _fetch_cryptocompare(toTs_param, bar='1d'):
 
 
 def _fetch_kraken(bar='1d'):
-    """Respaldo intradia: Kraken responde desde EE.UU. y no exige API key.
+    """Respaldo que funciona desde EE.UU. y no exige API key.
 
-    Devuelve como maximo 720 velas, asi que a 4h cubre ~120 dias. Es poco para
-    entrenar, pero suficiente para que la app no muera si las otras dos fuentes
-    fallan a la vez.
+    CLAVE: Kraken solo admite ciertos intervalos (1, 5, 15, 30, 60, 240, 1440,
+    10080, 21600 minutos). **NO existe el de 480** — pedir 8h devolvia
+    'EGeneral:Invalid arguments'. Por eso 4h funcionaba (240 es valido) y 8h no.
+    La solucion es pedir el mayor intervalo valido que DIVIDA al deseado y
+    agregar aqui: para 8h se piden velas de 4h y se combinan de dos en dos.
+
+    Devuelve hasta 720 velas: a 4h son ~120 dias, suficiente para estimar
+    aunque no para la ventana completa de 750.
     """
-    intervalos = {'1d': 1440, '8h': 480, '4h': 240, '1h': 60}
+    VALIDOS = {1: 1, 5: 5, 15: 15, 30: 30, 60: 60, 240: 240, 1440: 1440}
+
+    if bar == '1d':
+        pedir, agregar = 1440, None
+    else:
+        horas = int(bar.replace('h', ''))
+        minutos = horas * 60
+        if minutos in VALIDOS:
+            pedir, agregar = minutos, None
+        else:
+            # mayor intervalo valido que divida exactamente al pedido
+            divisores = [v for v in VALIDOS if minutos % v == 0 and v < minutos]
+            if not divisores:
+                raise RuntimeError(f'Kraken no admite ni divide el intervalo {bar}')
+            pedir, agregar = max(divisores), horas
+
     r = requests.get('https://api.kraken.com/0/public/OHLC',
-                     params={'pair': 'XBTUSD', 'interval': intervalos.get(bar, 1440)},
-                     timeout=25)
+                     params={'pair': 'XBTUSD', 'interval': pedir}, timeout=25)
     r.raise_for_status()
     j = r.json()
     if j.get('error'):
-        raise RuntimeError(f"Kraken: {j['error']}")
+        raise RuntimeError(f"Kraken (interval={pedir}): {j['error']}")
     clave = [k for k in j['result'] if k != 'last'][0]
     d = pd.DataFrame(j['result'][clave],
                      columns=['t', 'open', 'high', 'low', 'close', 'vwap', 'vol', 'n'])
     d['timestamp'] = pd.to_datetime(d['t'], unit='s')
     d = d.set_index('timestamp')[['close', 'high', 'low']].astype(float)
-    return d[~d.index.duplicated(keep='last')].sort_index()
+    d = d[~d.index.duplicated(keep='last')].sort_index()
 
+    if agregar:
+        d = d.resample(f'{agregar}h', label='left', closed='left').agg(
+            {'close': 'last', 'high': 'max', 'low': 'min'}).dropna()
 
-def _fetch_binance_klines(symbol="BTCUSDT"):
-    """Binance klines diarios, sin API key (patron probado en notebook V4.3.3)."""
-    rows, end = [], None
-    for _ in range(3):                       # 3 x 500 = 1500 velas max
-        p = {'symbol': symbol, 'interval': '1d', 'limit': 500}
-        if end:
-            p['endTime'] = end
-        r = requests.get('https://api.binance.com/api/v3/klines', params=p, timeout=15)
-        r.raise_for_status()
-        k = r.json()
-        if not k:
-            break
-        rows = k + rows
-        end = k[0][0] - 1
-        if len(k) < 1000:
-            break
-    d = pd.DataFrame(rows, columns=['t', 'open', 'high', 'low', 'close', 'vol',
-                                    'ct', 'volume', 'n', 'tb', 'tq', 'ig'])
-    d['timestamp'] = pd.to_datetime(d['t'], unit='ms')
-    d = d.set_index('timestamp')[['close', 'high', 'low']].astype(float)
-    return d[~d.index.duplicated(keep='last')].sort_index()
+    if len(d) < 100:
+        raise RuntimeError(f'Kraken devolvio solo {len(d)} velas de {bar}')
+    return d
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -816,9 +820,10 @@ def fetch_btc_data(toTs_param, bar_key='1d'):
         raise RuntimeError(
             f"Sin datos de precio para barra {_bar}: fallaron todas las fuentes "
             f"({'; '.join(errors)}) y no hay cache local. "
-            "Nota: Binance bloquea IPs de EE.UU., donde corre Streamlit Cloud. "
-            "El intradia se construye agregando velas horarias de CryptoCompare; "
-            "si acabas de cambiar de temporalidad, espera 1 minuto y reintenta."
+            "\n\nCausas habituales: (1) CryptoCompare agoto su limite gratuito -> "
+            "consigue una API key gratis en cryptocompare.com y cargala como "
+            "CRYPTOCOMPARE_API_KEY en los Secrets de Streamlit; (2) Binance bloquea "
+            "IPs de EE.UU., donde corre Streamlit Cloud; (3) Kraken solo cubre ~120 dias."
         )
 
     hist = hist.sort_index()
