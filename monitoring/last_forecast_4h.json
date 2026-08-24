@@ -1,5 +1,5 @@
 {
-  "emitted_at_utc": "2026-08-23T20:32:43+00:00",
+  "emitted_at_utc": "2026-08-24T01:50:13+00:00",
   "target_date": "2026-08-23 20:00:00",
   "base_close": 77333.04,
   "base_date": "2026-08-23 16:00:00",
@@ -19,5 +19,5 @@
   "banda_lo_95": 75550.45,
   "banda_hi_95": 78834.72,
   "centro": 77296.37,
-  "fuente": "CryptoCompare (4h)"
+  "fuente": "cache local"
 }
