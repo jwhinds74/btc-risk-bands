@@ -532,7 +532,7 @@ BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
 
 # Marcador visible en el sidebar: permite confirmar de un vistazo que el
 # despliegue corresponde al archivo entregado, sin abrir el codigo.
-APP_VERSION = 'v2.6'
+APP_VERSION = 'v2.7'
 
 
 def bar_actual():
@@ -1148,9 +1148,14 @@ with st.sidebar:
     if _nuevo != bar_actual():
         # Cambiar de temporalidad invalida el forecast en pantalla: son modelos
         # distintos sobre datos distintos.
+        #
+        # NO se limpia la cache aqui. Hacerlo borraba la serie horaria compartida
+        # y obligaba a redescargarla en cada cambio, agotando el limite de
+        # peticiones del proveedor — por eso 4h funcionaba y 8h fallaba justo
+        # despues. Las cachés ya estan segmentadas por temporalidad, asi que no
+        # hay riesgo de mezclar datos.
         st.session_state['bar'] = _nuevo
         st.session_state['listo'] = False
-        st.cache_data.clear()
         st.rerun()
     st.session_state['bar'] = _nuevo
 
