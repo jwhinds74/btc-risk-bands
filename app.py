@@ -296,7 +296,10 @@ warnings.filterwarnings('ignore')
 # ============================================================================
 # CHART COLORS - Consistent across all charts
 # ============================================================================
-COLOR_ACTUAL = '#4A3A6B'      # Dark purple for actual/historical prices
+# Sobre el fondo negro mate el morado oscuro original (#4A3A6B) quedaba
+# practicamente invisible. Este lila claro conserva la identidad de la
+# paleta con contraste suficiente.
+COLOR_ACTUAL = '#B9A7E0'      # Lila claro para precio historico/real
 COLOR_FORECAST = '#F5C9A8'    # Salmon/Peach for forecast (Hinds Analytics logo)
 COLOR_CI_BOOTSTRAP = 'rgba(80, 200, 120, 0.9)'   # Green for Bootstrap CI
 COLOR_CI_GARCH = 'rgba(245, 160, 90, 0.9)'       # Orange for GARCH CI
@@ -529,7 +532,7 @@ BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
 
 # Marcador visible en el sidebar: permite confirmar de un vistazo que el
 # despliegue corresponde al archivo entregado, sin abrir el codigo.
-APP_VERSION = 'v2.4'
+APP_VERSION = 'v2.5'
 
 
 def bar_actual():
@@ -659,10 +662,21 @@ def _fetch_cryptocompare(toTs_param, bar='1d'):
     if bar != '1d':
         hist = _resample_ohlc(hist, int(bar.replace('h', '')))
 
-    if len(hist) < minimo:
+    # DEGRADACION CONTROLADA: si la paginacion larga no reune suficientes velas,
+    # se acepta lo obtenido siempre que alcance para estimar. Es preferible una
+    # ventana corta —con su aviso en pantalla— a dejar la app sin datos, que fue
+    # el retroceso de la version anterior.
+    minimo_absoluto = 120 if bar != '1d' else 100
+    if len(hist) < minimo_absoluto:
         raise RuntimeError(
             f"CryptoCompare solo devolvio {len(hist)} velas de {bar} "
-            f"(minimo {minimo}); fallos: {'; '.join(fallos) or 'ninguno'}")
+            f"(minimo absoluto {minimo_absoluto}); fallos: {'; '.join(fallos) or 'ninguno'}")
+    if len(hist) < minimo:
+        st.warning(
+            f"⚠️ Solo se obtuvieron {len(hist)} velas de {bar} (se esperaban {minimo}+). "
+            "La ventana de entrenamiento será más corta de lo previsto y la cobertura "
+            "de las bandas puede degradarse. Reintenta en unos minutos: suele deberse "
+            "al límite de peticiones del proveedor de datos.")
     return hist
 
 
