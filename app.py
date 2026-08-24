@@ -1557,11 +1557,12 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
             fig.add_vline(x=hist_regime.index[-1], line=dict(color='#CC4444', dash='dash', width=2),
                           annotation_text='Hoy (UTC)')
             fig.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                              font=dict(color='#FFFFFF'), hovermode='x unified', height=500,
-                              margin=dict(l=60, r=20, t=30, b=115),
-                              xaxis=dict(title='Fecha', showgrid=False),
+                              font=dict(color='#FFFFFF'), hovermode='x unified', height=520,
+                              margin=dict(l=60, r=20, t=30, b=120),
+                              xaxis=dict(title='', showgrid=False,
+                                         **ejes_tiempo(len(h_show) + len(forecast_df))),
                               yaxis=dict(title='Precio (USD)', showgrid=False, tickformat='$,.0f'),
-                              legend=dict(bgcolor='rgba(90,90,90,.8)'))
+                              legend=LEYENDA_ABAJO)
             st.plotly_chart(fig, use_container_width=True)
 
             st.caption(
