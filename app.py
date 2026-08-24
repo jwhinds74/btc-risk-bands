@@ -466,19 +466,50 @@ def calculate_adaptive_split(n_samples):
 # traducirlos a barras: a 4h, "un mes" son 132 barras, no 22.
 # ---------------------------------------------------------------------------
 def ejes_tiempo(n_barras=None):
-    """Formato de eje X segun la temporalidad activa.
+    """Eje temporal al estilo de una plataforma de trading.
 
-    A barra diaria basta con la fecha; a 4h hay que mostrar la HORA o el eje
-    resulta ilegible (varias barras comparten el mismo dia). El espaciado se
-    calcula para que salgan ~8 marcas, sea cual sea el rango.
+    Plotly, si se le deja elegir, coloca las marcas en fronteras "redondas"
+    (00:00 de cada dia), de modo que en H4 todas las etiquetas mostraban la
+    misma hora y el eje no decia nada sobre la barra. Aqui el espaciado se fija
+    como un MULTIPLO DEL INTERVALO DE BARRA, igual que hace MT5: las marcas caen
+    sobre barras reales y por eso aparecen 16:00, 00:00, 08:00... revelando el
+    ritmo intradiario.
     """
     b = bar_actual()
+    n = max(int(n_barras or 40), 8)
+    objetivo = 7                       # marcas visibles deseadas
+
     if b == '1d':
-        return dict(tickformat='%d %b', nticks=8)
+        paso_dias = max(1, round(n / objetivo))
+        return dict(tickformat='%d %b<br>%Y', dtick=paso_dias * 86400000,
+                    tickangle=0, ticks='outside', ticklen=5,
+                    tickcolor='#5A5A5A', showline=True, linecolor='#3A3A3A')
+
     horas = int(b.replace('h', ''))
-    if n_barras and n_barras > 60:
-        return dict(tickformat='%d %b<br>%H:%M', nticks=8)
-    return dict(tickformat='%d %b<br>%H:%M', dtick=horas * 3600000 * max(1, (n_barras or 12) // 8))
+    pasos = max(1, round(n / objetivo))          # cada cuantas barras una marca
+    return dict(tickformat='%d %b<br>%H:%M', dtick=pasos * horas * 3600000,
+                tickangle=0, ticks='outside', ticklen=5,
+                tickcolor='#5A5A5A', showline=True, linecolor='#3A3A3A')
+
+
+# Fondo negro mate para el area de datos, como en las plataformas de trading:
+# el gris claro anterior restaba contraste a las bandas y a los caminos tenues.
+FONDO_GRAFICO = '#131313'
+REJILLA = '#262626'
+
+
+def estilo_grafico(alto=460, y_titulo='Precio (USD)', y_formato='$,.0f'):
+    """Layout comun a todos los graficos: fondo mate, rejilla discreta,
+    leyenda debajo del area y margen inferior suficiente para ambas."""
+    return dict(
+        plot_bgcolor=FONDO_GRAFICO, paper_bgcolor='#3A3A3A',
+        font=dict(color='#E8E8E8'), hovermode='x unified', height=alto,
+        margin=dict(l=64, r=24, t=30, b=120),
+        yaxis=dict(title=y_titulo, tickformat=y_formato, showgrid=True,
+                   gridcolor=REJILLA, zeroline=False,
+                   showline=True, linecolor='#3A3A3A'),
+        legend=LEYENDA_ABAJO,
+    )
 
 
 LEYENDA_ABAJO = dict(orientation='h', yanchor='top', y=-0.22,
@@ -495,6 +526,10 @@ BARRAS = {
     '4h': {'bpd': 6,  'etq': 'H4', 'nombre': '4 horas'},
 }
 BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
+
+# Marcador visible en el sidebar: permite confirmar de un vistazo que el
+# despliegue corresponde al archivo entregado, sin abrir el codigo.
+APP_VERSION = 'v2.4'
 
 
 def bar_actual():
@@ -559,46 +594,38 @@ def _get_cc_api_key():
     return ""
 
 
-def _fetch_cryptocompare(toTs_param, bar='1d'):
-    """OHLC desde CryptoCompare. Soporta barra diaria e intradiaria.
+def _resample_ohlc(hist, horas):
+    """Agrega velas horarias a 4h u 8h. Alineado a 00:00 UTC, como los exchanges."""
+    r = hist.resample(f'{horas}h', label='left', closed='left').agg(
+        {'close': 'last', 'high': 'max', 'low': 'min'})
+    return r.dropna()
 
-    El endpoint /histohour acepta `aggregate` (1-30), asi que 4h y 8h se piden
-    directamente sin construirlas a mano. Es la unica de nuestras fuentes que
-    responde de forma fiable desde servidores estadounidenses, que es donde
-    corren Streamlit Cloud y GitHub Actions.
+
+def _fetch_cryptocompare(toTs_param, bar='1d'):
+    """OHLC desde CryptoCompare.
+
+    Para intradia se piden velas HORARIAS y se agregan aqui con pandas, en vez
+    de usar el parametro `aggregate` de la API: ese parametro fallaba de forma
+    intermitente (probablemente restringido en el plan gratuito) y dejaba la app
+    sin datos. Bajar por horas usa solo parametros basicos, que son los mismos
+    que ya funcionan en produccion para la barra diaria.
     """
     api_key = _get_cc_api_key()
     headers = {"authorization": f"Apikey {api_key}"} if api_key else {}
 
     if bar == '1d':
         url = "https://min-api.cryptocompare.com/data/v2/histoday"
-        params = {"fsym": "BTC", "tsym": "USD", "limit": 2000, "toTs": toTs_param}
-        paginas, agg = 1, 1
+        paginas, minimo = 1, 200
     else:
-        agg = int(bar.replace('h', ''))
         url = "https://min-api.cryptocompare.com/data/v2/histohour"
-        # limit=2000 con aggregate=4 -> 2000 velas de 4h = 333 dias. Tres paginas
-        # cubren ~1000 dias, mas que la ventana de entrenamiento de 750.
-        params = {"fsym": "BTC", "tsym": "USD", "limit": 2000, "aggregate": agg}
-        # ~250 velas por pagina: 22 paginas cubren ~5.500 velas de 4h (~900 dias).
-        paginas = 22
+        # 2000 horas por pagina = 83 dias. 10 paginas ~ 830 dias, suficiente
+        # para la ventana de 750 en cualquier temporalidad intradiaria.
+        paginas, minimo = 10, 300
 
-    # OJO: en /histohour el parametro `limit` cuenta HORAS, no velas agregadas.
-    # Con aggregate=8 y limit=2000 la API devuelve ~250 filas, no 2000. Comparar
-    # len(bloque) contra `limit` rompia el bucle en la primera pagina y dejaba
-    # el intradia con una fraccion de la historia pedida (251 velas en vez de
-    # miles), lo que degradaba cobertura y QLIKE sin causa aparente.
-    esperado = max(1, params["limit"] // agg)
-    minimo_util = 300 if bar != '1d' else 200      # velas por debajo de las cuales no sirve
-
-    # RESILIENCIA (v2.1). Con 22 paginas el plan gratuito de CryptoCompare acaba
-    # devolviendo error por limite de peticiones. Antes eso lanzaba excepcion y
-    # tiraba TODA la descarga, incluidas las paginas ya obtenidas. Ahora se
-    # acumula lo que se pueda y solo se falla si no alcanza el minimo util.
     marcos, to_ts, fallos = [], toTs_param, []
     for _pag in range(paginas):
         try:
-            p = dict(params)
+            p = {"fsym": "BTC", "tsym": "USD", "limit": 2000}
             if to_ts:
                 p["toTs"] = int(to_ts)
             r = requests.get(url, params=p, headers=headers, timeout=30)
@@ -611,10 +638,10 @@ def _fetch_cryptocompare(toTs_param, bar='1d'):
                 break
             marcos.append(bloque)
             to_ts = int(bloque['time'].min()) - 1
-            if len(bloque) < esperado * 0.9:      # la API agoto historia
+            if len(bloque) < 1800:                # la API agoto historia
                 break
             if bar != '1d':
-                time.sleep(0.25)                  # respiro entre peticiones
+                time.sleep(0.2)
         except Exception as _e:
             fallos.append(f'p{_pag}:{type(_e).__name__}')
             break                                 # nos quedamos con lo acumulado
@@ -627,14 +654,16 @@ def _fetch_cryptocompare(toTs_param, bar='1d'):
     hist['timestamp'] = pd.to_datetime(hist['time'], unit='s')
     hist = hist[['timestamp', 'close', 'high', 'low']].set_index('timestamp')
     hist = hist[~hist.index.duplicated(keep='last')].sort_index()
-    # Velas con precio 0 aparecen en tramos sin datos: se descartan porque
-    # arruinarian el estimador de Parkinson (log(0) -> -inf).
-    hist = hist[(hist[['close', 'high', 'low']] > 0).all(axis=1)]
-    if len(hist) < minimo_util:
+    hist = hist[(hist[['close', 'high', 'low']] > 0).all(axis=1)].astype(float)
+
+    if bar != '1d':
+        hist = _resample_ohlc(hist, int(bar.replace('h', '')))
+
+    if len(hist) < minimo:
         raise RuntimeError(
             f"CryptoCompare solo devolvio {len(hist)} velas de {bar} "
-            f"(minimo util {minimo_util}); paginas fallidas: {'; '.join(fallos) or 'ninguna'}")
-    return hist.astype(float)
+            f"(minimo {minimo}); fallos: {'; '.join(fallos) or 'ninguno'}")
+    return hist
 
 
 def _fetch_kraken(bar='1d'):
@@ -1128,10 +1157,10 @@ with st.sidebar:
 
     st.markdown(
         "<div class='data-source-info'>"
-        "<strong>Fuente:</strong> " + ("CryptoCompare &rarr; Binance &rarr; cache"
-                                       if bar_actual() == '1d' else "Binance &rarr; cache") + "<br>"
+        "<strong>Fuente:</strong> CryptoCompare &rarr; Binance &rarr; Kraken &rarr; cache<br>"
         "<strong>Motor:</strong> HAR-RV (Corsi, 2009)<br>"
-        f"<strong>Barra:</strong> {BARRAS[bar_actual()]['etq']} &middot; UTC, solo cerradas"
+        f"<strong>Barra:</strong> {BARRAS[bar_actual()]['etq']} &middot; UTC, solo cerradas<br>"
+        f"<strong>Versión:</strong> <code>{APP_VERSION}</code>"
         "</div>", unsafe_allow_html=True)
 
     with st.expander("ℹ️ Sobre esta versión"):
@@ -1556,13 +1585,10 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                                      line=dict(color=COLOR_FORECAST, width=1, dash='dot'), opacity=.5))
             fig.add_vline(x=hist_regime.index[-1], line=dict(color='#CC4444', dash='dash', width=2),
                           annotation_text='Hoy (UTC)')
-            fig.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                              font=dict(color='#FFFFFF'), hovermode='x unified', height=520,
-                              margin=dict(l=60, r=20, t=30, b=120),
-                              xaxis=dict(title='', showgrid=False,
-                                         **ejes_tiempo(len(h_show) + len(forecast_df))),
-                              yaxis=dict(title='Precio (USD)', showgrid=False, tickformat='$,.0f'),
-                              legend=LEYENDA_ABAJO)
+            fig.update_layout(
+                **estilo_grafico(alto=520),
+                xaxis=dict(title='', showgrid=True, gridcolor=REJILLA,
+                           **ejes_tiempo(len(h_show) + len(forecast_df))))
             st.plotly_chart(fig, use_container_width=True)
 
             st.caption(
@@ -1726,12 +1752,10 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                         if sv.notna().any():
                             fma.add_trace(go.Scatter(x=w.index, y=sv, name=n_,
                                                      line=dict(color=c_, width=1.5)))
-                    fma.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                                      font=dict(color='#FFF'), height=430, hovermode='x unified',
-                                      margin=dict(l=60, r=20, t=20, b=115),
-                                      yaxis=dict(tickformat='$,.0f', showgrid=False),
-                                      xaxis=dict(title='', showgrid=False, **ejes_tiempo(len(w))),
-                                      legend=LEYENDA_ABAJO)
+                    fma.update_layout(
+                        **estilo_grafico(alto=460, y_titulo='Precio (USD)', y_formato='$,.0f'),
+                        xaxis=dict(title='', showgrid=True, gridcolor=REJILLA,
+                                   **ejes_tiempo(len(w))))
                     st.plotly_chart(fma, use_container_width=True)
 
             # --- contexto de mercado ---
@@ -1802,12 +1826,10 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                 for bp in st.session_state['breakpoints'][:-1]:
                     figr.add_vline(x=hist.index[min(bp, len(hist) - 1)],
                                    line=dict(color='#F5A05A', dash='dash', width=1))
-                figr.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                                   font=dict(color='#FFF'), height=450, hovermode='x unified',
-                                   margin=dict(l=60, r=20, t=20, b=115),
-                                   yaxis=dict(tickformat='$,.0f', showgrid=False),
-                                   xaxis=dict(title='', showgrid=False, **ejes_tiempo(len(hist))),
-                                   legend=LEYENDA_ABAJO)
+                figr.update_layout(
+                    **estilo_grafico(alto=460, y_titulo='Precio (USD)', y_formato='$,.0f'),
+                    xaxis=dict(title='', showgrid=True, gridcolor=REJILLA,
+                               **ejes_tiempo(len(hist))))
                 st.plotly_chart(figr, use_container_width=True)
                 st.dataframe(rs, use_container_width=True, hide_index=True)
                 st.caption("Los quiebres se detectan con PELT sobre la serie de precios. "
@@ -1879,12 +1901,10 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                                       y=st.session_state['val_pred'] * 100,
                                       name='HAR-RV', mode='lines',
                                       line=dict(color=COLOR_FORECAST, width=2)))
-            figv.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                               font=dict(color='#FFF'), height=410, hovermode='x unified',
-                               margin=dict(l=60, r=20, t=20, b=115),
-                               yaxis=dict(title='vol por barra (%)', showgrid=False),
-                               xaxis=dict(title='', showgrid=False, **ejes_tiempo(len(st.session_state['val_dates']))),
-                               legend=LEYENDA_ABAJO)
+            figv.update_layout(
+                **estilo_grafico(alto=430, y_titulo='vol por barra (%)', y_formato='.2f'),
+                xaxis=dict(title='', showgrid=True, gridcolor=REJILLA,
+                           **ejes_tiempo(len(st.session_state['val_dates']))))
             st.plotly_chart(figv, use_container_width=True)
             st.caption("Aquí la línea SÍ debe seguir a la realidad: la volatilidad, a diferencia de "
                        "la dirección, es predecible. Ese contraste resume por qué este producto "
@@ -1968,12 +1988,10 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                         figt.add_trace(go.Scatter(x=out['fecha'], y=out['cierre'], mode='markers',
                                                   name='Fuera de banda',
                                                   marker=dict(color='#FF4444', size=9, symbol='x')))
-                figt.update_layout(plot_bgcolor='#808080', paper_bgcolor='#5A5A5A',
-                                   font=dict(color='#FFF'), height=450, hovermode='x unified',
-                                   margin=dict(l=60, r=20, t=20, b=115),
-                                   yaxis=dict(tickformat='$,.0f', showgrid=False),
-                                   xaxis=dict(title='', showgrid=False, **ejes_tiempo(len(p))),
-                                   legend=LEYENDA_ABAJO)
+                figt.update_layout(
+                    **estilo_grafico(alto=460, y_titulo='Precio (USD)', y_formato='$,.0f'),
+                    xaxis=dict(title='', showgrid=True, gridcolor=REJILLA,
+                               **ejes_tiempo(len(p))))
                 st.plotly_chart(figt, use_container_width=True)
                 st.dataframe(hl.tail(15).iloc[::-1], use_container_width=True, hide_index=True)
 

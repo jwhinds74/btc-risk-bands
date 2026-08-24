@@ -95,7 +95,7 @@ def conditional_sigma(v):
 
 # Version del motor. CAMBIALA con cada modificacion del modelo: sin esto el
 # track record mezcla versiones y la cobertura acumulada deja de significar nada.
-MODEL_VERSION = f'HAR-RV-1.7-{BAR}'
+MODEL_VERSION = f'HAR-RV-2.4-{BAR}'
 
 ALERTS = []
 
@@ -113,30 +113,22 @@ def fetch_prices():
     key = os.environ.get('CRYPTOCOMPARE_API_KEY', '')
     # CryptoCompare solo se usa para barra diaria; a intradia se va directo a Binance.
     # CryptoCompare es la unica fuente fiable desde los runners de GitHub
-    # (alojados en EE.UU., donde Binance bloquea). Para intradia se usa el
-    # endpoint horario con `aggregate`, que devuelve velas de 4h u 8h directas.
+    # (alojados en EE.UU., donde Binance bloquea). Para intradia se piden velas
+    # HORARIAS y se agregan aqui: el parametro `aggregate` de la API fallaba de
+    # forma intermitente y dejaba al monitor sin datos.
     try:
         headers = {'authorization': f'Apikey {key}'} if key else {}
         if CONFIG['BAR'] == '1d':
             url = 'https://min-api.cryptocompare.com/data/v2/histoday'
-            base = {'fsym': 'BTC', 'tsym': 'USD', 'limit': 2000}
-            paginas = 1
+            paginas, minimo = 1, 200
         else:
             url = 'https://min-api.cryptocompare.com/data/v2/histohour'
-            base = {'fsym': 'BTC', 'tsym': 'USD', 'limit': 2000,
-                    'aggregate': int(CONFIG['BAR'].replace('h', ''))}
-            paginas = 22    # ~250 velas/pagina -> ~5.500 velas de 4h (~900 dias)
-        # `limit` en /histohour cuenta HORAS, no velas agregadas: con aggregate=8
-        # devuelve ~250 filas para limit=2000. Cortar comparando contra `limit`
-        # dejaba el intradia con una fraccion de la historia.
-        _agg = base.get('aggregate', 1)
-        esperado = max(1, base['limit'] // _agg)
-        # RESILIENCIA (v2.1): se acumulan las paginas que respondan y se sigue
-        # adelante con lo obtenido si el plan gratuito corta por rate limit.
+            paginas, minimo = 10, 300
+
         marcos, to_ts, fallos = [], None, []
         for _pag in range(paginas):
             try:
-                p = dict(base)
+                p = {'fsym': 'BTC', 'tsym': 'USD', 'limit': 2000}
                 if to_ts:
                     p['toTs'] = int(to_ts)
                 r = requests.get(url, params=p, headers=headers, timeout=25)
@@ -149,23 +141,29 @@ def fetch_prices():
                     break
                 marcos.append(blo)
                 to_ts = int(blo['time'].min()) - 1
-                if len(blo) < esperado * 0.9:
+                if len(blo) < 1800:
                     break
                 if CONFIG['BAR'] != '1d':
-                    time.sleep(0.25)
+                    time.sleep(0.2)
             except Exception as _e:
                 fallos.append(f'p{_pag}:{type(_e).__name__}')
                 break
         if fallos:
-            log(f"CryptoCompare: paginacion interrumpida ({'; '.join(fallos)}); "
-                f'se usan {sum(len(x) for x in marcos)} velas acumuladas')
+            log(f"CryptoCompare: paginacion interrumpida ({'; '.join(fallos)})")
         if not marcos:
             raise RuntimeError('CryptoCompare devolvio 0 velas')
+
         d = pd.concat(marcos, ignore_index=True)
         d['timestamp'] = pd.to_datetime(d['time'], unit='s')
         df = d.set_index('timestamp')[['close', 'high', 'low']].astype(float)
         df = df[~df.index.duplicated(keep='last')].sort_index()
-        df = df[(df > 0).all(axis=1)]          # descarta velas vacias (log(0))
+        df = df[(df > 0).all(axis=1)]
+        if CONFIG['BAR'] != '1d':
+            _h = int(CONFIG['BAR'].replace('h', ''))
+            df = df.resample(f'{_h}h', label='left', closed='left').agg(
+                {'close': 'last', 'high': 'max', 'low': 'min'}).dropna()
+        if len(df) < minimo:
+            raise RuntimeError(f'solo {len(df)} velas de {CONFIG["BAR"]} (minimo {minimo})')
         source = f"CryptoCompare ({CONFIG['BAR']})"
     except Exception as e:
         log(f'CryptoCompare no disponible ({type(e).__name__}) -> Binance')
