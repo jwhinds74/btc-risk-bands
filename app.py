@@ -532,7 +532,7 @@ BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
 
 # Marcador visible en el sidebar: permite confirmar de un vistazo que el
 # despliegue corresponde al archivo entregado, sin abrir el codigo.
-APP_VERSION = 'v2.7'
+APP_VERSION = 'v2.8'
 
 
 def bar_actual():
@@ -647,7 +647,9 @@ def _fetch_cc_horario(toTs_param, paginas=10):
                 if intento == 0:
                     time.sleep(1.5)              # respiro ante limite de peticiones
                 else:
-                    fallos.append(f'p{_pag}:{type(_e).__name__}')
+                    # El TEXTO del error, no solo su tipo: sin el es imposible
+                    # distinguir un limite de peticiones de un parametro invalido.
+                    fallos.append(f'p{_pag}: {type(_e).__name__}: {str(_e)[:120]}')
         if not exito or to_ts is None:
             break
         time.sleep(0.25)
@@ -693,16 +695,30 @@ def _fetch_cryptocompare(toTs_param, bar='1d'):
     horario, fallos = _fetch_cc_horario(toTs_param)
     if not len(horario):
         raise RuntimeError(
-            f"CryptoCompare no devolvio velas horarias ({'; '.join(fallos) or 'respuesta vacia'})")
+            f"CryptoCompare no devolvio velas horarias. Fallos: "
+            f"{'; '.join(fallos) or 'respuesta vacia sin error'}")
+    st.session_state['diag_horario'] = {
+        'horas': len(horario), 'dias': (horario.index[-1] - horario.index[0]).days,
+        'fallos': fallos}
 
     horas = int(bar.replace('h', ''))
     hist = horario.resample(f'{horas}h', label='left', closed='left').agg(
         {'close': 'last', 'high': 'max', 'low': 'min'}).dropna()
 
-    if len(hist) < 120:
+    # El minimo debe escalar con las necesidades del MODELO, no ser un numero
+    # fijo. El HAR necesita una ventana mensual de 22*bpd barras; se exige el
+    # triple para poder estimar. Un umbral fijo penalizaba a 8h, que tiene la
+    # mitad de barras que 4h para las mismas horas descargadas.
+    # SIN TOPE: acotarlo a un maximo rompia la proporcionalidad y hacia que 8h
+    # fallara mientras 4h pasaba con los mismos datos. Como tanto las barras
+    # disponibles como la ventana mensual del HAR escalan con bpd, exigir un
+    # multiplo de HAR_M hace que ambas temporalidades pasen o fallen juntas.
+    _minimo_modelo = 2 * 22 * BARRAS[bar]['bpd']          # 4h -> 264, 8h -> 132
+    if len(hist) < _minimo_modelo:
         raise RuntimeError(
             f"Solo {len(hist)} velas de {bar} tras agregar {len(horario)} horarias "
-            f"(minimo 120); fallos: {'; '.join(fallos) or 'ninguno'}")
+            f"(minimo {_minimo_modelo}). Fallos de descarga: "
+            f"{'; '.join(fallos) or 'ninguno'}")
     if len(hist) < 300:
         st.warning(
             f"⚠️ Solo se obtuvieron {len(hist)} velas de {bar} (se esperaban 300+). "
@@ -773,7 +789,7 @@ def fetch_btc_data(toTs_param, bar_key='1d'):
         hist = _fetch_cryptocompare(toTs_param, _bar)
         source = f"CryptoCompare ({_bar})"
     except Exception as e:
-        errors.append(f"CryptoCompare: {type(e).__name__}")
+        errors.append(f"CryptoCompare: {type(e).__name__}: {str(e)[:200]}")
         try:
             hist = _fetch_binance_klines("BTCUSDT")
             source = f"Binance klines ({_bar})"
@@ -783,7 +799,7 @@ def fetch_btc_data(toTs_param, bar_key='1d'):
                 hist = _fetch_kraken(_bar)
                 source = f"Kraken ({_bar})"
             except Exception as e3:
-                errors.append(f"Kraken: {type(e3).__name__}")
+                errors.append(f"Kraken: {type(e3).__name__}: {str(e3)[:120]}")
             if hist is None and os.path.exists(archivo_cache()):
                 cached = pd.read_csv(archivo_cache(), parse_dates=[0], index_col=0)
                 cols = [c for c in ['close', 'high', 'low'] if c in cached.columns]
@@ -1163,6 +1179,15 @@ with st.sidebar:
     st.caption(f"**{_b['nombre']}** · {_b['bpd']} barra(s)/día · "
                f"HAR: {5*_b['bpd']}/{22*_b['bpd']} barras · "
                f"track record: `health_log{sufijo() or ''}.csv`")
+    _diag = st.session_state.get('diag_horario')
+    if _diag and _nuevo != '1d':
+        _msg = (f"Serie horaria: **{_diag['horas']:,} horas** ({_diag['dias']} días) "
+                f"→ {_diag['horas'] // int(_nuevo.replace('h','')):,} velas de {_b['etq']}")
+        if _diag['fallos']:
+            st.warning(f"{_msg}\n\nDescarga incompleta: {'; '.join(_diag['fallos'][:2])}")
+        else:
+            st.caption(_msg)
+
     if _nuevo != '1d':
         st.info(f"Temporalidad **{_b['etq']}** en evaluación. La versión validada es D1; "
                 "esta acumula su propio track record en paralelo para poder compararlas.")
