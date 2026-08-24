@@ -1,0 +1,23 @@
+{
+  "emitted_at_utc": "2026-08-23T20:32:43+00:00",
+  "target_date": "2026-08-23 20:00:00",
+  "base_close": 77333.04,
+  "base_date": "2026-08-23 16:00:00",
+  "bar": "4h",
+  "motor": "HAR-RV",
+  "sigma": 0.009396,
+  "sigma_cruda": 0.00964,
+  "mz_a": 0.000169,
+  "mz_b": 0.9571,
+  "train_window": 4500,
+  "coef": [
+    0.001394,
+    0.353887,
+    0.397016,
+    0.076387
+  ],
+  "banda_lo_95": 75550.45,
+  "banda_hi_95": 78834.72,
+  "centro": 77296.37,
+  "fuente": "CryptoCompare (4h)"
+}
