@@ -95,7 +95,7 @@ def conditional_sigma(v):
 
 # Version del motor. CAMBIALA con cada modificacion del modelo: sin esto el
 # track record mezcla versiones y la cobertura acumulada deja de significar nada.
-MODEL_VERSION = f'HAR-RV-2.4-{BAR}'
+MODEL_VERSION = f'HAR-RV-2.6-{BAR}'
 
 ALERTS = []
 
@@ -146,8 +146,24 @@ def fetch_prices():
                 if CONFIG['BAR'] != '1d':
                     time.sleep(0.2)
             except Exception as _e:
-                fallos.append(f'p{_pag}:{type(_e).__name__}')
-                break
+                # Un reintento con espera antes de rendirse: el fallo mas comun
+                # es el limite de peticiones, que se resuelve esperando.
+                try:
+                    time.sleep(2.0)
+                    r = requests.get(url, params=p, headers=headers, timeout=25)
+                    r.raise_for_status()
+                    j = r.json()
+                    if j.get('Response') != 'Success':
+                        raise RuntimeError(j.get('Message', 'respuesta inesperada'))
+                    blo = pd.DataFrame(j['Data']['Data'])
+                    if blo.empty:
+                        break
+                    marcos.append(blo)
+                    to_ts = int(blo['time'].min()) - 1
+                    continue
+                except Exception:
+                    fallos.append(f'p{_pag}:{type(_e).__name__}')
+                    break
         if fallos:
             log(f"CryptoCompare: paginacion interrumpida ({'; '.join(fallos)})")
         if not marcos:

@@ -532,7 +532,7 @@ BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
 
 # Marcador visible en el sidebar: permite confirmar de un vistazo que el
 # despliegue corresponde al archivo entregado, sin abrir el codigo.
-APP_VERSION = 'v2.5'
+APP_VERSION = 'v2.6'
 
 
 def bar_actual():
@@ -604,79 +604,111 @@ def _resample_ohlc(hist, horas):
     return r.dropna()
 
 
-def _fetch_cryptocompare(toTs_param, bar='1d'):
-    """OHLC desde CryptoCompare.
+@st.cache_data(ttl=1800, show_spinner=False)
+def _fetch_cc_horario(toTs_param, paginas=10):
+    """Descarga velas HORARIAS de CryptoCompare, cacheadas 30 minutos.
 
-    Para intradia se piden velas HORARIAS y se agregan aqui con pandas, en vez
-    de usar el parametro `aggregate` de la API: ese parametro fallaba de forma
-    intermitente (probablemente restringido en el plan gratuito) y dejaba la app
-    sin datos. Bajar por horas usa solo parametros basicos, que son los mismos
-    que ya funcionan en produccion para la barra diaria.
+    Es la pieza clave para que convivan varias temporalidades: 4h y 8h se
+    construyen agregando ESTA MISMA serie, asi que cambiar de temporalidad no
+    dispara una segunda descarga. Antes cada cambio lanzaba 10 peticiones
+    nuevas y el proveedor cortaba por limite de peticiones — por eso 4h
+    funcionaba y 8h fallaba justo despues.
+
+    Devuelve (df_horario, lista_de_fallos). No lanza excepcion si obtiene algo:
+    quien llama decide si lo obtenido alcanza.
     """
     api_key = _get_cc_api_key()
     headers = {"authorization": f"Apikey {api_key}"} if api_key else {}
-
-    if bar == '1d':
-        url = "https://min-api.cryptocompare.com/data/v2/histoday"
-        paginas, minimo = 1, 200
-    else:
-        url = "https://min-api.cryptocompare.com/data/v2/histohour"
-        # 2000 horas por pagina = 83 dias. 10 paginas ~ 830 dias, suficiente
-        # para la ventana de 750 en cualquier temporalidad intradiaria.
-        paginas, minimo = 10, 300
+    url = "https://min-api.cryptocompare.com/data/v2/histohour"
 
     marcos, to_ts, fallos = [], toTs_param, []
     for _pag in range(paginas):
-        try:
-            p = {"fsym": "BTC", "tsym": "USD", "limit": 2000}
-            if to_ts:
-                p["toTs"] = int(to_ts)
-            r = requests.get(url, params=p, headers=headers, timeout=30)
-            r.raise_for_status()
-            data = r.json()
-            if data.get("Response") != "Success":
-                raise RuntimeError(data.get('Message', 'sin detalle'))
-            bloque = pd.DataFrame(data["Data"]["Data"])
-            if bloque.empty:
+        exito = False
+        for intento in range(2):                 # un reintento con espera
+            try:
+                p = {"fsym": "BTC", "tsym": "USD", "limit": 2000}
+                if to_ts:
+                    p["toTs"] = int(to_ts)
+                r = requests.get(url, params=p, headers=headers, timeout=30)
+                r.raise_for_status()
+                data = r.json()
+                if data.get("Response") != "Success":
+                    raise RuntimeError(data.get('Message', 'sin detalle'))
+                bloque = pd.DataFrame(data["Data"]["Data"])
+                if bloque.empty:
+                    exito = True
+                    to_ts = None
+                    break
+                marcos.append(bloque)
+                to_ts = int(bloque['time'].min()) - 1
+                exito = True
                 break
-            marcos.append(bloque)
-            to_ts = int(bloque['time'].min()) - 1
-            if len(bloque) < 1800:                # la API agoto historia
-                break
-            if bar != '1d':
-                time.sleep(0.2)
-        except Exception as _e:
-            fallos.append(f'p{_pag}:{type(_e).__name__}')
-            break                                 # nos quedamos con lo acumulado
+            except Exception as _e:
+                if intento == 0:
+                    time.sleep(1.5)              # respiro ante limite de peticiones
+                else:
+                    fallos.append(f'p{_pag}:{type(_e).__name__}')
+        if not exito or to_ts is None:
+            break
+        time.sleep(0.25)
 
     if not marcos:
+        return pd.DataFrame(), fallos
+
+    h = pd.concat(marcos, ignore_index=True)
+    h['timestamp'] = pd.to_datetime(h['time'], unit='s')
+    h = h[['timestamp', 'close', 'high', 'low']].set_index('timestamp')
+    h = h[~h.index.duplicated(keep='last')].sort_index()
+    h = h[(h[['close', 'high', 'low']] > 0).all(axis=1)].astype(float)
+    return h, fallos
+
+
+def _fetch_cryptocompare(toTs_param, bar='1d'):
+    """OHLC desde CryptoCompare.
+
+    Diario: endpoint /histoday, directo.
+    Intradia: se reutiliza la serie horaria cacheada y se agrega aqui, en vez de
+    usar el parametro `aggregate` de la API (fallaba de forma intermitente) o de
+    descargar por separado para cada temporalidad (agotaba el limite).
+    """
+    if bar == '1d':
+        api_key = _get_cc_api_key()
+        headers = {"authorization": f"Apikey {api_key}"} if api_key else {}
+        r = requests.get("https://min-api.cryptocompare.com/data/v2/histoday",
+                         params={"fsym": "BTC", "tsym": "USD", "limit": 2000,
+                                 "toTs": toTs_param},
+                         headers=headers, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("Response") != "Success":
+            raise RuntimeError(f"CryptoCompare: {data.get('Message', 'sin detalle')}")
+        d = pd.DataFrame(data["Data"]["Data"])
+        d['timestamp'] = pd.to_datetime(d['time'], unit='s')
+        d = d[['timestamp', 'close', 'high', 'low']].set_index('timestamp')
+        d = d[(d[['close', 'high', 'low']] > 0).all(axis=1)]
+        if len(d) < 100:
+            raise RuntimeError(f"CryptoCompare solo devolvio {len(d)} velas diarias")
+        return d.astype(float)
+
+    horario, fallos = _fetch_cc_horario(toTs_param)
+    if not len(horario):
         raise RuntimeError(
-            f"CryptoCompare no devolvio velas ({'; '.join(fallos) or 'respuesta vacia'})")
+            f"CryptoCompare no devolvio velas horarias ({'; '.join(fallos) or 'respuesta vacia'})")
 
-    hist = pd.concat(marcos, ignore_index=True)
-    hist['timestamp'] = pd.to_datetime(hist['time'], unit='s')
-    hist = hist[['timestamp', 'close', 'high', 'low']].set_index('timestamp')
-    hist = hist[~hist.index.duplicated(keep='last')].sort_index()
-    hist = hist[(hist[['close', 'high', 'low']] > 0).all(axis=1)].astype(float)
+    horas = int(bar.replace('h', ''))
+    hist = horario.resample(f'{horas}h', label='left', closed='left').agg(
+        {'close': 'last', 'high': 'max', 'low': 'min'}).dropna()
 
-    if bar != '1d':
-        hist = _resample_ohlc(hist, int(bar.replace('h', '')))
-
-    # DEGRADACION CONTROLADA: si la paginacion larga no reune suficientes velas,
-    # se acepta lo obtenido siempre que alcance para estimar. Es preferible una
-    # ventana corta —con su aviso en pantalla— a dejar la app sin datos, que fue
-    # el retroceso de la version anterior.
-    minimo_absoluto = 120 if bar != '1d' else 100
-    if len(hist) < minimo_absoluto:
+    if len(hist) < 120:
         raise RuntimeError(
-            f"CryptoCompare solo devolvio {len(hist)} velas de {bar} "
-            f"(minimo absoluto {minimo_absoluto}); fallos: {'; '.join(fallos) or 'ninguno'}")
-    if len(hist) < minimo:
+            f"Solo {len(hist)} velas de {bar} tras agregar {len(horario)} horarias "
+            f"(minimo 120); fallos: {'; '.join(fallos) or 'ninguno'}")
+    if len(hist) < 300:
         st.warning(
-            f"⚠️ Solo se obtuvieron {len(hist)} velas de {bar} (se esperaban {minimo}+). "
-            "La ventana de entrenamiento será más corta de lo previsto y la cobertura "
-            "de las bandas puede degradarse. Reintenta en unos minutos: suele deberse "
-            "al límite de peticiones del proveedor de datos.")
+            f"⚠️ Solo se obtuvieron {len(hist)} velas de {bar} (se esperaban 300+). "
+            "La ventana de entrenamiento será más corta y la cobertura de las bandas "
+            "puede degradarse. Reintenta en unos minutos: suele deberse al límite de "
+            "peticiones del proveedor.")
     return hist
 
 
@@ -768,8 +800,9 @@ def fetch_btc_data(toTs_param, bar_key='1d'):
         raise RuntimeError(
             f"Sin datos de precio para barra {_bar}: fallaron todas las fuentes "
             f"({'; '.join(errors)}) y no hay cache local. "
-            "Nota: Binance bloquea IPs de EE.UU., donde corre Streamlit Cloud; "
-            "para intradia se usa CryptoCompare (endpoint horario con agregacion)."
+            "Nota: Binance bloquea IPs de EE.UU., donde corre Streamlit Cloud. "
+            "El intradia se construye agregando velas horarias de CryptoCompare; "
+            "si acabas de cambiar de temporalidad, espera 1 minuto y reintenta."
         )
 
     hist = hist.sort_index()
