@@ -596,7 +596,7 @@ def main():
     out = pd.concat([hist_log, pd.DataFrame([row])], ignore_index=True)
     out = out.reindex(columns=[c for c in cols if c in out.columns or c in row])
     out.to_csv(CONFIG['HEALTH_LOG'], index=False)
-    log(f'health_log.csv actualizado ({len(out)} filas).')
+    log(f"{CONFIG['HEALTH_LOG']} actualizado ({len(out)} filas).")
 
     # --- PASO 5: umbrales -> Telegram --------------------------------------
     if row['cobertura_rodante_90d'] is not None and row['cobertura_rodante_90d'] < CONFIG['COVERAGE_ALERT']:

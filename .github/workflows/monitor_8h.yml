@@ -1,26 +1,26 @@
-name: BTC Risk Bands Monitor (4h)
+name: BTC Risk Bands Monitor (8h)
 
-# 6 corridas al dia, una por barra cerrada de 4h (+unos minutos de margen
+# 3 corridas al dia, una por barra cerrada de 8h (+unos minutos de margen
 # para que el proveedor publique el cierre). Si el monitor corriera una sola vez
 # al dia, la mayoria de las bandas emitidas nunca se evaluarian y el track
 # record intradiario no significaria nada.
 on:
   schedule:
-    - cron: '5 0,4,8,12,16,20 * * *'
+    - cron: '7 0,8,16 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:                      # evita que dos corridas choquen en el push
-  group: monitor-4h
+  group: monitor-8h
   cancel-in-progress: false
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
     env:
-      BAR_INTERVAL: '4h'
+      BAR_INTERVAL: '8h'
       ALERTS_NEWS: '0'            # la busqueda web solo en la corrida diaria
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +35,7 @@ jobs:
       - run: |
           git config user.name xgbit-bot
           git config user.email bot@xgbit
-          git add monitoring/health_log_4h.csv monitoring/last_forecast_4h.json btc_ohlcv_cache_4h.csv || true
-          git commit -m "monitor 4h: $(date -u +'%F %H:%M')" || true
+          git add monitoring/health_log_8h.csv monitoring/last_forecast_8h.json btc_ohlcv_cache_8h.csv || true
+          git commit -m "monitor 8h: $(date -u +'%F %H:%M')" || true
           git pull --rebase --autostash || true
           git push

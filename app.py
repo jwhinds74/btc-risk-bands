@@ -532,7 +532,7 @@ BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
 
 # Marcador visible en el sidebar: permite confirmar de un vistazo que el
 # despliegue corresponde al archivo entregado, sin abrir el codigo.
-APP_VERSION = 'v2.9'
+APP_VERSION = 'v3.0'
 
 
 def bar_actual():
@@ -1569,7 +1569,14 @@ if run_forecast:
             lo, hi, med, paths, sig_path = har_band_paths(
                 coef, d, days, z_tr, np.log(last_price), drift=0.0, n_simulations=1000)
 
-            fechas = pd.date_range(hist_regime.index[-1] + timedelta(days=1), periods=days, freq='D')
+            # El paso debe ser el de la BARRA, no un dia fijo. Con freq='D' el
+            # modelo proyectaba 7 barras de 4h pero las etiquetaba como 7 dias:
+            # las tres temporalidades mostraban las mismas fechas y el horizonte
+            # real quedaba oculto.
+            _bar_h = 24 if bar_actual() == '1d' else int(bar_actual().replace('h', ''))
+            _paso_bar = pd.Timedelta(hours=_bar_h)
+            fechas = pd.date_range(hist_regime.index[-1] + _paso_bar,
+                                   periods=days, freq=_paso_bar)
             forecast_df = pd.DataFrame({
                 'Fecha': fechas, 'Referencia': med, 'Piso 95%': lo, 'Techo 95%': hi,
                 'Ancho %': (hi - lo) / med * 100,
@@ -1615,26 +1622,38 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
 
         # ------------------------------------------------------------------ TAB 1
         with tab1:
-            st.subheader(f"Proyección a {days} días · {st.session_state['regime_label']}")
+
+            # Las etiquetas deben decir en que unidad se mide el horizonte, o
+            # "Día 7" en H4 sugiere una semana cuando en realidad son 28 horas.
+            _es_dia = bar_actual() == '1d'
+            _et = BARRAS[bar_actual()]['etq']
+            _u1 = "Día 1" if _es_dia else f"Barra 1 · {_et}"
+            _uN = f"Día {days}" if _es_dia else f"Barra {days} · {_et}"
+            _horizonte_h = days * (24 if _es_dia else int(bar_actual().replace('h', '')))
+
+            st.subheader(f"Proyección a {days} " + ("días" if _es_dia else f"barras de {_et}")
+                     + f" ({_horizonte_h}h) · {st.session_state['regime_label']}")
 
             lo1, hi1 = forecast_df['Piso 95%'].iloc[0], forecast_df['Techo 95%'].iloc[0]
             loN, hiN = forecast_df['Piso 95%'].iloc[-1], forecast_df['Techo 95%'].iloc[-1]
             semi1 = (hi1 - lo1) / 2 / last_price * 100
+
 
             c1, c2, c3, c4, c5 = st.columns(5)
             with c1:
                 st.metric("Precio actual", f"${last_price:,.0f}",
                           help="Último cierre diario confirmado.")
             with c2:
-                st.metric("Vol esperada mañana", f"±{sig_path[0]*100:.2f}%",
-                          help="Volatilidad diaria que proyecta el HAR-RV para mañana. "
+                st.metric("Vol esperada mañana" if _es_dia else f"Vol esperada · próx. {_et}",
+                          f"±{sig_path[0]*100:.2f}%",
+                          help="Volatilidad por barra que proyecta el HAR-RV. "
                                "Es lo que este modelo sí sabe estimar.")
             with c3:
-                st.metric("Banda 95% — Día 1", f"${lo1:,.0f} – ${hi1:,.0f}",
+                st.metric(f"Banda 95% — {_u1}", f"${lo1:,.0f} – ${hi1:,.0f}",
                           f"semiancho ±{semi1:.1f}%", delta_color="off",
                           help="Rango donde se espera el cierre de mañana con 95% de confianza.")
             with c4:
-                st.metric(f"Banda 95% — Día {days}", f"${loN:,.0f} – ${hiN:,.0f}",
+                st.metric(f"Banda 95% — {_uN}", f"${loN:,.0f} – ${hiN:,.0f}",
                           f"ancho {(hiN-loN)/forecast_df['Referencia'].iloc[-1]*100:.1f}%",
                           delta_color="off",
                           help="El ancho crece con el horizonte: incertidumbre acumulada.")
@@ -1880,7 +1899,9 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
             st.markdown("---")
             st.markdown("##### Tabla detallada")
             tdf = forecast_df.copy()
-            tdf['Fecha'] = tdf['Fecha'].dt.strftime('%Y-%m-%d')
+            # Sin la hora, seis barras de 4h del mismo dia salian con la misma
+            # etiqueta y la tabla era ilegible.
+            tdf['Fecha'] = tdf['Fecha'].dt.strftime('%Y-%m-%d' if _es_dia else '%Y-%m-%d %H:%M')
             for c in ('Referencia', 'Piso 95%', 'Techo 95%'):
                 tdf[c] = tdf[c].apply(lambda x: f"${x:,.0f}")
             tdf['Ancho %'] = tdf['Ancho %'].apply(lambda x: f"{x:.1f}%")
