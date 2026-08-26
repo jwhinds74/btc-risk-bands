@@ -469,30 +469,35 @@ def calculate_adaptive_split(n_samples):
 # traducirlos a barras: a 4h, "un mes" son 132 barras, no 22.
 # ---------------------------------------------------------------------------
 def ejes_tiempo(n_barras=None):
-    """Eje temporal al estilo de una plataforma de trading.
+    """Eje temporal con la granularidad de la BARRA, como en una plataforma.
 
-    Plotly, si se le deja elegir, coloca las marcas en fronteras "redondas"
-    (00:00 de cada dia), de modo que en H4 todas las etiquetas mostraban la
-    misma hora y el eje no decia nada sobre la barra. Aqui el espaciado se fija
-    como un MULTIPLO DEL INTERVALO DE BARRA, igual que hace MT5: las marcas caen
-    sobre barras reales y por eso aparecen 16:00, 00:00, 08:00... revelando el
-    ritmo intradiario.
+    Regla: una marca por barra siempre que quepan; si no caben, el menor
+    multiplo de la barra que deje un numero legible de marcas. Nunca se deja
+    elegir a Plotly, que colocaba las marcas en fronteras "redondas" (00:00) y
+    en H4 todas las etiquetas mostraban la misma hora.
+
+    El paso es SIEMPRE un multiplo entero del intervalo de barra, de modo que
+    cada marca cae sobre una barra real y no entre dos.
     """
     b = bar_actual()
-    n = max(int(n_barras or 40), 8)
-    objetivo = 7                       # marcas visibles deseadas
+    n = max(int(n_barras or 40), 5)
+    horas_barra = 24 if b == '1d' else int(b.replace('h', ''))
 
-    if b == '1d':
-        paso_dias = max(1, round(n / objetivo))
-        return dict(tickformat='%d %b<br>%Y', dtick=paso_dias * 86400000,
-                    tickangle=0, ticks='outside', ticklen=5,
-                    tickcolor='#5A5A5A', showline=True, linecolor='#3A3A3A')
+    # Cuantas marcas caben sin solaparse: las etiquetas intradiarias son mas
+    # anchas (llevan hora), asi que admiten menos.
+    # Se admiten muchas marcas para poder etiquetar CADA barra cuando la
+    # ventana es corta; el angulo de -45 evita que se solapen.
+    max_marcas = 30                       # misma granularidad en todas las barras
+    pasos = max(1, -(-n // max_marcas))          # division hacia arriba
+    marcas = -(-n // pasos)
 
-    horas = int(b.replace('h', ''))
-    pasos = max(1, round(n / objetivo))          # cada cuantas barras una marca
-    return dict(tickformat='%d %b<br>%H:%M', dtick=pasos * horas * 3600000,
-                tickangle=0, ticks='outside', ticklen=5,
-                tickcolor='#5A5A5A', showline=True, linecolor='#3A3A3A')
+    base = dict(tickformat='%d %b' if b == '1d' else '%d %b<br>%H:%M',
+                dtick=pasos * horas_barra * 3600000,
+                ticks='outside', ticklen=5, tickcolor='#5A5A5A',
+                showline=True, linecolor='#3A3A3A',
+                tickangle=0 if marcas <= 8 else -45,
+                tickfont=dict(size=9 if marcas > 18 else (10 if marcas > 8 else 11)))
+    return base
 
 
 # Fondo negro mate para el area de datos, como en las plataformas de trading:
@@ -532,7 +537,7 @@ BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
 
 # Marcador visible en el sidebar: permite confirmar de un vistazo que el
 # despliegue corresponde al archivo entregado, sin abrir el codigo.
-APP_VERSION = 'v3.0'
+APP_VERSION = 'v3.1'
 
 
 def bar_actual():
@@ -1665,7 +1670,11 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
 
             # --- gráfico ---
             fig = go.Figure()
-            h_show = hist_regime.tail(60)
+            # Ventana proporcional al horizonte. Con 60 barras fijas el pronostico
+            # quedaba aplastado contra el borde derecho, y ademas obligaba a
+            # espaciar las marcas del eje. Con ~3x el horizonte caben todas las
+            # barras etiquetadas una a una.
+            h_show = hist_regime.tail(max(20, min(60, days * 3)))
             fig.add_trace(go.Scatter(x=h_show.index, y=h_show['close'], name='Histórico',
                                      mode='lines', line=dict(color=COLOR_ACTUAL, width=2)))
             if show_paths:
