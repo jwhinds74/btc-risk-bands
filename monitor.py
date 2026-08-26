@@ -95,7 +95,7 @@ def conditional_sigma(v):
 
 # Version del motor. CAMBIALA con cada modificacion del modelo: sin esto el
 # track record mezcla versiones y la cobertura acumulada deja de significar nada.
-MODEL_VERSION = f'HAR-RV-2.6-{BAR}'
+MODEL_VERSION = f'HAR-RV-3.3-{BAR}'
 
 ALERTS = []
 
@@ -107,6 +107,47 @@ def log(msg):
 # ---------------------------------------------------------------------------
 # 1. DATOS
 # ---------------------------------------------------------------------------
+def fetch_kraken(bar='1d'):
+    """Respaldo publico sin API key, accesible desde EE.UU.
+
+    Kraken solo admite ciertos intervalos (1, 5, 15, 30, 60, 240, 1440 min):
+    NO existe el de 480, asi que para 8h se piden velas de 4h y se agregan de
+    dos en dos. Devuelve hasta 720 velas (~120 dias a 4h).
+    """
+    VALIDOS = {1, 5, 15, 30, 60, 240, 1440}
+    if bar == '1d':
+        pedir, agregar = 1440, None
+    else:
+        horas = int(bar.replace('h', ''))
+        minutos = horas * 60
+        if minutos in VALIDOS:
+            pedir, agregar = minutos, None
+        else:
+            divisores = [v for v in VALIDOS if minutos % v == 0 and v < minutos]
+            if not divisores:
+                raise RuntimeError(f'Kraken no admite ni divide el intervalo {bar}')
+            pedir, agregar = max(divisores), horas
+
+    r = requests.get('https://api.kraken.com/0/public/OHLC',
+                     params={'pair': 'XBTUSD', 'interval': pedir}, timeout=25)
+    r.raise_for_status()
+    j = r.json()
+    if j.get('error'):
+        raise RuntimeError(f"Kraken (interval={pedir}): {j['error']}")
+    clave = [k for k in j['result'] if k != 'last'][0]
+    d = pd.DataFrame(j['result'][clave],
+                     columns=['t', 'open', 'high', 'low', 'close', 'vwap', 'vol', 'n'])
+    d['timestamp'] = pd.to_datetime(d['t'], unit='s')
+    d = d.set_index('timestamp')[['close', 'high', 'low']].astype(float)
+    d = d[~d.index.duplicated(keep='last')].sort_index()
+    if agregar:
+        d = d.resample(f'{agregar}h', label='left', closed='left').agg(
+            {'close': 'last', 'high': 'max', 'low': 'min'}).dropna()
+    if len(d) < 100:
+        raise RuntimeError(f'Kraken devolvio solo {len(d)} velas de {bar}')
+    return d
+
+
 def fetch_prices():
     """Jerarquia identica a la app: CryptoCompare -> Binance klines -> cache."""
     df, source = None, None
@@ -207,8 +248,20 @@ def fetch_prices():
             df = df[~df.index.duplicated(keep='last')].sort_index()
             source = 'Binance (klines)'
         except Exception as e2:
-            log(f'Binance no disponible ({type(e2).__name__}) -> cache')
-            if os.path.exists(CONFIG['PRICE_CACHE']):
+            log(f'Binance no disponible ({type(e2).__name__}) -> Kraken')
+            # KRAKEN (v3.3): tercer nivel que faltaba. Es la unica fuente que
+            # responde desde los runners de GitHub cuando CryptoCompare agota su
+            # limite y Binance bloquea por IP. Sin el, una temporalidad NUEVA
+            # —sin cache previo en el repo— se quedaba sin ninguna via: por eso
+            # 4h funcionaba (ya tenia cache) y 8h fallaba en su primera corrida.
+            try:
+                df = fetch_kraken(CONFIG['BAR'])
+                source = f"Kraken ({CONFIG['BAR']})"
+                ALERTS.append('CryptoCompare y Binance fallaron: se uso Kraken '
+                              '(historia limitada a ~120 dias).')
+            except Exception as e3:
+                log(f'Kraken no disponible ({type(e3).__name__}: {e3}) -> cache')
+            if df is None and os.path.exists(CONFIG['PRICE_CACHE']):
                 df = pd.read_csv(CONFIG['PRICE_CACHE'], parse_dates=[0], index_col=0)
                 for c in ('high', 'low'):
                     if c not in df.columns:
@@ -218,7 +271,12 @@ def fetch_prices():
                 ALERTS.append('Fetch de precio fallido en ambas APIs: se uso el cache local.')
 
     if df is None or len(df) == 0:
-        raise RuntimeError('Sin datos de precio: APIs y cache fallaron.')
+        raise RuntimeError(
+            f"Sin datos de precio para barra {CONFIG['BAR']}: fallaron "
+            'CryptoCompare (limite de peticiones), Binance (bloqueo de IPs de \n'
+            'EE.UU.) y Kraken, y no existe cache local. Si es la primera corrida \n'
+            'de esta temporalidad, no hay cache que usar: reintenta en unos \n'
+            'minutos o carga CRYPTOCOMPARE_API_KEY en los secrets del repo.')
 
     df = df.sort_index()
     # Solo barras CERRADAS: se descarta la barra en curso, sea de 24h o de 4h.
