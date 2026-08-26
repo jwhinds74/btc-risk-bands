@@ -537,7 +537,7 @@ BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
 
 # Marcador visible en el sidebar: permite confirmar de un vistazo que el
 # despliegue corresponde al archivo entregado, sin abrir el codigo.
-APP_VERSION = 'v3.1'
+APP_VERSION = 'v3.2'
 
 
 def bar_actual():
@@ -2050,6 +2050,35 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                 # habia forecast previo contra el que comparar. Publicar "100%" con
                 # una sola observacion induce a error.
                 _n_eval = int(hl['dentro_banda_95'].notna().sum()) if 'dentro_banda_95' in hl else 0
+
+                # ------------------------------------------------------------
+                # SALUD DEL MONITOR. Sin esto, un workflow caido pasa inadvertido:
+                # la app sigue mostrando el ultimo historial como si estuviera al
+                # dia, y el track record deja de crecer en silencio.
+                # ------------------------------------------------------------
+                _ult = pd.Timestamp(hl['fecha'].max())
+                _bar_h = 24 if bar_actual() == '1d' else int(bar_actual().replace('h', ''))
+                _atraso_h = (pd.Timestamp.utcnow().tz_localize(None) - _ult).total_seconds() / 3600
+                _barras_atraso = int(_atraso_h // _bar_h)
+                _unidad = 'días' if bar_actual() == '1d' else f"barras de {BARRAS[bar_actual()]['etq']}"
+
+                if _barras_atraso >= 2:
+                    st.error(
+                        f"🔴 **El monitor lleva {_barras_atraso} {_unidad} sin escribir.** "
+                        f"Última entrada: {_ult.strftime('%Y-%m-%d %H:%M')} UTC. "
+                        "El track record no está creciendo y lo que ves abajo está congelado.\n\n"
+                        "**Qué revisar:** en GitHub → pestaña *Actions* → el workflow de esta "
+                        "temporalidad. Si la última corrida está en rojo, el detalle del paso "
+                        "fallido dice la causa. Si no hay corridas recientes, GitHub puede haber "
+                        "pausado el cron: basta con lanzarlo a mano una vez (*Run workflow*) "
+                        "para reactivarlo.")
+                elif _barras_atraso == 1:
+                    st.info(f"ℹ️ Última entrada del monitor: {_ult.strftime('%Y-%m-%d %H:%M')} UTC "
+                            f"({_barras_atraso} {_unidad} de retraso). Normal si la barra actual "
+                            "aún no ha cerrado.")
+                else:
+                    st.success(f"✅ Monitor al día · última entrada "
+                               f"{_ult.strftime('%Y-%m-%d %H:%M')} UTC")
 
                 k1, k2, k3 = st.columns(3)
                 with k1:
