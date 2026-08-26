@@ -95,7 +95,7 @@ def conditional_sigma(v):
 
 # Version del motor. CAMBIALA con cada modificacion del modelo: sin esto el
 # track record mezcla versiones y la cobertura acumulada deja de significar nada.
-MODEL_VERSION = f'HAR-RV-3.3-{BAR}'
+MODEL_VERSION = f'HAR-RV-3.4-{BAR}'
 
 ALERTS = []
 
@@ -478,6 +478,29 @@ def main():
     last_date = px.index[-1]
     last_close = float(px['close'].iloc[-1])
 
+    # --- PASO 1b: ¿AVANZARON LOS DATOS? -----------------------------------
+    # Si la ultima barra es la misma que en la corrida anterior, el monitor esta
+    # leyendo un cache congelado: emite bandas que nunca podran evaluarse porque
+    # el cierre real no llega. Producia decenas de filas con 'dentro_banda_95'
+    # vacio y un track record que no crecia, sin senal de alarma alguna.
+    datos_estancados = False
+    if os.path.exists(CONFIG['HEALTH_LOG']):
+        try:
+            _prev_log = pd.read_csv(CONFIG['HEALTH_LOG'])
+            if len(_prev_log):
+                _ult_fecha = str(_prev_log['fecha'].iloc[-1])
+                _actual = str(last_date.date() if CONFIG['BAR'] == '1d' else last_date)
+                if _ult_fecha == _actual:
+                    datos_estancados = True
+                    log(f'DATOS ESTANCADOS: la ultima barra sigue siendo {_actual}. '
+                        'La fuente no avanzo desde la corrida anterior.')
+                    ALERTS.append(
+                        f'Datos estancados: la ultima barra sigue siendo {_actual}. '
+                        'El monitor no puede evaluar nada y el track record no crece. '
+                        'Revisar las fuentes de precio.')
+        except Exception:
+            pass
+
     # --- PASO 2: evaluar el forecast de AYER contra la realidad -------------
     dentro_banda, sigma_emitida, error_vol = None, None, None
     prev = None
@@ -653,6 +676,12 @@ def main():
             'riesgo_nivel', 'riesgo_capas', 'riesgo_shock', 'model_version', 'fuente']
     out = pd.concat([hist_log, pd.DataFrame([row])], ignore_index=True)
     out = out.reindex(columns=[c for c in cols if c in out.columns or c in row])
+    if datos_estancados and len(out) > 1:
+        # Se descarta la fila duplicada: repetir la misma barra inflaria el
+        # conteo de "dias monitoreados" sin anadir informacion.
+        out = out.iloc[:-1]
+        log('Fila descartada por datos estancados (no se duplica la barra).')
+
     out.to_csv(CONFIG['HEALTH_LOG'], index=False)
     log(f"{CONFIG['HEALTH_LOG']} actualizado ({len(out)} filas).")
 
