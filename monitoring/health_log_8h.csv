@@ -1,3 +1,4 @@
 fecha,bar,cierre,dentro_banda_95,sigma_emitida,error_vol_%,cobertura_rodante_90d,error_vol_medio_90d,error_vol_abs_90d,regimen_actual,regimen_cambio,ks_drift_pvalue,banda_lo_95,banda_hi_95,sigma_hoy,banda_lo_95_hoy,banda_hi_95_hoy,mz_b,train_window,sigma_har_crudo,piso_activo,b_d,riesgo_nivel,riesgo_capas,riesgo_shock,model_version,fuente
 2026-08-26 00:00:00,8h,78917.8,,,,,,,volatil(255d),False,0.0019,,,0.014647,76252.58,81205.38,1.0,294,0.010624,True,0.3135,ninguno,0,0.48,HAR-RV-3.4-8h,Kraken (8h)
 2026-08-26 08:00:00,8h,78008.8,1.0,0.014647,-23.5,100.0,-23.5,23.5,volatil(255d),False,0.0055,76252.58,81205.38,0.013112,75444.01,80029.89,1.0,294,0.011999,True,0.3129,ninguno,0,0.77,HAR-RV-3.4-8h,Kraken (8h)
+2026-08-27 00:00:00,8h,79085.7,,,,100.0,-23.5,23.5,volatil(260d),False,0.0116,75444.01,80029.89,0.01215,76793.2,81095.74,1.0,294,0.008153,True,0.314,ninguno,0,0.31,HAR-RV-3.4-8h,Kraken (8h)
