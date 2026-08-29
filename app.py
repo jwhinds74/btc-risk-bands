@@ -537,7 +537,7 @@ BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
 
 # Marcador visible en el sidebar: permite confirmar de un vistazo que el
 # despliegue corresponde al archivo entregado, sin abrir el codigo.
-APP_VERSION = 'v4.0'
+APP_VERSION = 'v4.1'
 
 
 def bar_actual():
@@ -2101,7 +2101,38 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                 _barras_atraso = int(_atraso_h // _bar_h)
                 _unidad = 'días' if bar_actual() == '1d' else f"barras de {BARRAS[bar_actual()]['etq']}"
 
-                if _barras_atraso >= 2:
+                # ¿Corrio el monitor aunque no escribiera fila? El latido lo dice.
+                _hb = None
+                try:
+                    _hb_file = f'monitoring/last_run{sufijo()}.json'
+                    if os.path.exists(_hb_file):
+                        import json as _json
+                        _hb = _json.load(open(_hb_file))
+                except Exception:
+                    _hb = None
+
+                if _barras_atraso >= 2 and _hb:
+                    _hb_ts = pd.Timestamp(_hb['ran_at_utc']).tz_localize(None)
+                    _hb_h = (pd.Timestamp.utcnow().tz_localize(None) - _hb_ts).total_seconds() / 3600
+                    if _hb_h < _bar_h * 2:
+                        # Corrio hace poco: el problema son los DATOS, no el workflow.
+                        st.error(
+                            f"🔴 **El monitor corre, pero los datos no avanzan.** "
+                            f"Última corrida: hace {_hb_h:.1f}h · última barra obtenida: "
+                            f"`{_hb.get('last_bar')}` · fuente: `{_hb.get('source')}`"
+                            + ("  ·  marcada como **estancada**" if _hb.get('stale') else "")
+                            + ".\n\n**Qué revisar:** no es el workflow —está corriendo— sino la "
+                            "fuente de precios. Si `fuente` dice *cache*, ninguna API respondió; "
+                            "si dice Kraken o CryptoCompare pero la barra no cambia, el proveedor "
+                            "va con retraso. En ambos casos el track record no puede crecer.")
+                    else:
+                        st.error(
+                            f"🔴 **El monitor lleva {_barras_atraso} {_unidad} sin correr.** "
+                            f"Último latido: {_hb_ts.strftime('%Y-%m-%d %H:%M')} UTC.\n\n"
+                            "**Qué revisar:** GitHub → *Actions* → el workflow de esta "
+                            "temporalidad. Si está en rojo, el paso fallido dice la causa; si no "
+                            "hay corridas, el cron se pausó y basta un *Run workflow*.")
+                elif _barras_atraso >= 2:
                     st.error(
                         f"🔴 **El monitor lleva {_barras_atraso} {_unidad} sin escribir.** "
                         f"Última entrada: {_ult.strftime('%Y-%m-%d %H:%M')} UTC. "

@@ -35,7 +35,7 @@ jobs:
       - run: |
           git config user.name xgbit-bot
           git config user.email bot@xgbit
-          git add monitoring/health_log_8h.csv monitoring/last_forecast_8h.json btc_ohlcv_cache_8h.csv || true
+          git add monitoring/health_log_8h.csv monitoring/last_forecast_8h.json monitoring/last_run_8h.json btc_ohlcv_cache_8h.csv || true
           git commit -m "monitor 8h: $(date -u +'%F %H:%M')" || true
           git pull --rebase --autostash || true
           git push

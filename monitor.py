@@ -61,6 +61,7 @@ CONFIG = {
     'PRICE_CACHE': f'btc_ohlcv_cache{_SUF}.csv',
     'HEALTH_LOG': f'monitoring/health_log{_SUF}.csv',
     'LAST_FORECAST': f'monitoring/last_forecast{_SUF}.json',
+    'HEARTBEAT': f'monitoring/last_run{_SUF}.json',
     # Componentes HAR escalados a barras
     'HAR_W': 5 * BPD,            # componente "semanal"
     'HAR_M': 22 * BPD,           # componente "mensual"
@@ -95,7 +96,7 @@ def conditional_sigma(v):
 
 # Version del motor. CAMBIALA con cada modificacion del modelo: sin esto el
 # track record mezcla versiones y la cobertura acumulada deja de significar nada.
-MODEL_VERSION = f'HAR-RV-4.0-{BAR}'
+MODEL_VERSION = f'HAR-RV-4.1-{BAR}'
 
 ALERTS = []
 
@@ -667,6 +668,23 @@ def main():
             'riesgo_nivel', 'riesgo_capas', 'riesgo_shock', 'model_version', 'fuente']
     out = pd.concat([hist_log, pd.DataFrame([row])], ignore_index=True)
     out = out.reindex(columns=[c for c in cols if c in out.columns or c in row])
+    # LATIDO (v4.1). Se escribe en TODA corrida, incluso si la fila se descarta
+    # por datos estancados. Sin el, "el monitor no corrio" y "corrio pero la
+    # fuente no avanzo" son indistinguibles desde la app, que era justo la
+    # ambiguedad que impedia diagnosticar.
+    try:
+        json.dump({
+            'ran_at_utc': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
+            'bar': CONFIG['BAR'],
+            'last_bar': str(last_date),
+            'source': source,
+            'stale': bool(datos_estancados),
+            'n_velas': int(len(px)),
+            'model_version': MODEL_VERSION,
+        }, open(CONFIG['HEARTBEAT'], 'w'), indent=2)
+    except Exception as e:
+        log(f'No se pudo escribir el latido ({type(e).__name__})')
+
     if datos_estancados and len(out) > 1:
         # Se descarta la fila duplicada: repetir la misma barra inflaria el
         # conteo de "dias monitoreados" sin anadir informacion.
