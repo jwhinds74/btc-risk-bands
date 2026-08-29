@@ -537,7 +537,7 @@ BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
 
 # Marcador visible en el sidebar: permite confirmar de un vistazo que el
 # despliegue corresponde al archivo entregado, sin abrir el codigo.
-APP_VERSION = 'v3.2'
+APP_VERSION = 'v4.0'
 
 
 def bar_actual():
@@ -792,23 +792,45 @@ def fetch_btc_data(toTs_param, bar_key='1d'):
     """
     hist, source, errors = None, None, []
     _bar = bar_actual()
+
+    # ------------------------------------------------------------------
+    # CACHE ACUMULATIVO (v4.0). El archivo del repo aporta la HISTORIA; las
+    # APIs solo las velas recientes. Antes cada carga bajaba la ventana
+    # completa, lo que agoto la cuota mensual de CryptoCompare (100 llamadas
+    # en el plan gratuito; el contador llego a 238). Con la fusion, la
+    # historia se acumula y el consumo baja a una peticion por carga.
+    # ------------------------------------------------------------------
+    _cache = None
+    try:
+        if os.path.exists(archivo_cache()):
+            _c = pd.read_csv(archivo_cache(), parse_dates=[0], index_col=0)
+            for _col in ('high', 'low'):
+                if _col not in _c.columns:
+                    _c[_col] = _c['close']
+            _cache = _c[['close', 'high', 'low']].astype(float)
+            _cache = _cache[(_cache > 0).all(axis=1)]
+    except Exception:
+        _cache = None
     # Jerarquia: CryptoCompare (unica fiable desde EE.UU.) -> Binance (bloquea
     # IPs de EE.UU., pero funciona en local) -> Kraken -> cache.
+    # Orden por COSTE y disponibilidad: Kraken es gratuito y sin limite
+    # practico; CryptoCompare tiene cuota mensual escasa; Binance bloquea las
+    # IPs de EE.UU., donde corre Streamlit Cloud.
     try:
-        hist = _fetch_cryptocompare(toTs_param, _bar)
-        source = f"CryptoCompare ({_bar})"
+        hist = _fetch_kraken(_bar)
+        source = f"Kraken ({_bar})"
     except Exception as e:
-        errors.append(f"CryptoCompare: {type(e).__name__}: {str(e)[:200]}")
+        errors.append(f"Kraken: {type(e).__name__}: {str(e)[:120]}")
         try:
-            hist = _fetch_binance_klines("BTCUSDT")
-            source = f"Binance klines ({_bar})"
+            hist = _fetch_cryptocompare(toTs_param, _bar)
+            source = f"CryptoCompare ({_bar})"
         except Exception as e2:
-            errors.append(f"Binance: {type(e2).__name__}")
+            errors.append(f"CryptoCompare: {type(e2).__name__}: {str(e2)[:160]}")
             try:
-                hist = _fetch_kraken(_bar)
-                source = f"Kraken ({_bar})"
+                hist = _fetch_binance_klines("BTCUSDT")
+                source = f"Binance klines ({_bar})"
             except Exception as e3:
-                errors.append(f"Kraken: {type(e3).__name__}: {str(e3)[:120]}")
+                errors.append(f"Binance: {type(e3).__name__}")
             if hist is None and os.path.exists(archivo_cache()):
                 cached = pd.read_csv(archivo_cache(), parse_dates=[0], index_col=0)
                 cols = [c for c in ['close', 'high', 'low'] if c in cached.columns]
@@ -835,6 +857,23 @@ def fetch_btc_data(toTs_param, bar_key='1d'):
     if source in ("CryptoCompare", "Binance (klines)"):
         try:
             hist.to_csv(archivo_cache())
+        except Exception:
+            pass
+
+    # FUSION: la union conserva historia que la API ya no entrega (Kraken solo
+    # devuelve 720 velas) y a la vez incorpora lo recien descargado.
+    if hist is not None and _cache is not None and len(_cache):
+        _antes = len(hist)
+        hist = pd.concat([_cache, hist])
+        hist = hist[~hist.index.duplicated(keep='last')].sort_index()
+        if len(hist) > _antes:
+            source = f"{source} + cache"
+    elif hist is None and _cache is not None and len(_cache):
+        hist, source = _cache, f"cache local ({len(_cache)} velas)"
+
+    if hist is not None:
+        try:
+            hist.to_csv(archivo_cache())      # se guarda ya fusionado
         except Exception:
             pass
 

@@ -95,7 +95,7 @@ def conditional_sigma(v):
 
 # Version del motor. CAMBIALA con cada modificacion del modelo: sin esto el
 # track record mezcla versiones y la cobertura acumulada deja de significar nada.
-MODEL_VERSION = f'HAR-RV-3.4-{BAR}'
+MODEL_VERSION = f'HAR-RV-4.0-{BAR}'
 
 ALERTS = []
 
@@ -148,151 +148,142 @@ def fetch_kraken(bar='1d'):
     return d
 
 
-def fetch_prices():
-    """Jerarquia identica a la app: CryptoCompare -> Binance klines -> cache."""
-    df, source = None, None
-    key = os.environ.get('CRYPTOCOMPARE_API_KEY', '')
-    # CryptoCompare solo se usa para barra diaria; a intradia se va directo a Binance.
-    # CryptoCompare es la unica fuente fiable desde los runners de GitHub
-    # (alojados en EE.UU., donde Binance bloquea). Para intradia se piden velas
-    # HORARIAS y se agregan aqui: el parametro `aggregate` de la API fallaba de
-    # forma intermitente y dejaba al monitor sin datos.
+def cargar_cache():
+    """Historia acumulada en el repo. Es la FUENTE PRINCIPAL, no un ultimo recurso.
+
+    Cada corrida anade solo las velas nuevas y hace commit, asi que el archivo
+    crece por si solo. A los pocos meses contiene mas historia intradiaria de la
+    que ninguna API gratuita entrega de una vez.
+    """
+    if not os.path.exists(CONFIG['PRICE_CACHE']):
+        return None
     try:
+        d = pd.read_csv(CONFIG['PRICE_CACHE'], parse_dates=[0], index_col=0)
+        for c in ('high', 'low'):
+            if c not in d.columns:
+                d[c] = d['close']
+        d = d[['close', 'high', 'low']].astype(float)
+        d = d[~d.index.duplicated(keep='last')].sort_index()
+        return d[(d > 0).all(axis=1)]
+    except Exception as e:
+        log(f'Cache ilegible ({type(e).__name__}) — se ignora')
+        return None
+
+
+def descargar_recientes():
+    """Solo las velas RECIENTES, no la historia completa.
+
+    Cambio clave para viabilidad comercial: antes cada corrida bajaba ~10 paginas
+    (la ventana entera), lo que agotaba en dos dias la cuota mensual de
+    CryptoCompare (100 llamadas/mes en el plan gratuito; el contador marcaba 238
+    de 100 consumidas). Con el cache haciendo de historia, basta una peticion
+    para las ultimas velas.
+
+    Orden: Kraken primero por ser gratuito y sin limite practico; CryptoCompare
+    despues solo si queda cuota; Binance al final porque bloquea IPs de EE.UU.,
+    donde corren los runners de GitHub.
+    """
+    errores = []
+
+    # --- 1. Kraken: gratis, sin key, hasta 720 velas ---
+    try:
+        d = fetch_kraken(CONFIG['BAR'])
+        return d, f"Kraken ({CONFIG['BAR']})", errores
+    except Exception as e:
+        errores.append(f'Kraken: {type(e).__name__}: {str(e)[:80]}')
+
+    # --- 2. CryptoCompare: UNA sola pagina (las velas recientes) ---
+    try:
+        key = os.environ.get('CRYPTOCOMPARE_API_KEY', '')
         headers = {'authorization': f'Apikey {key}'} if key else {}
         if CONFIG['BAR'] == '1d':
             url = 'https://min-api.cryptocompare.com/data/v2/histoday'
-            paginas, minimo = 1, 200
         else:
             url = 'https://min-api.cryptocompare.com/data/v2/histohour'
-            paginas, minimo = 10, 300
-
-        marcos, to_ts, fallos = [], None, []
-        for _pag in range(paginas):
-            try:
-                p = {'fsym': 'BTC', 'tsym': 'USD', 'limit': 2000}
-                if to_ts:
-                    p['toTs'] = int(to_ts)
-                r = requests.get(url, params=p, headers=headers, timeout=25)
-                r.raise_for_status()
-                j = r.json()
-                if j.get('Response') != 'Success':
-                    raise RuntimeError(j.get('Message', 'respuesta inesperada'))
-                blo = pd.DataFrame(j['Data']['Data'])
-                if blo.empty:
-                    break
-                marcos.append(blo)
-                to_ts = int(blo['time'].min()) - 1
-                if len(blo) < 1800:
-                    break
-                if CONFIG['BAR'] != '1d':
-                    time.sleep(0.2)
-            except Exception as _e:
-                # Un reintento con espera antes de rendirse: el fallo mas comun
-                # es el limite de peticiones, que se resuelve esperando.
-                try:
-                    time.sleep(2.0)
-                    r = requests.get(url, params=p, headers=headers, timeout=25)
-                    r.raise_for_status()
-                    j = r.json()
-                    if j.get('Response') != 'Success':
-                        raise RuntimeError(j.get('Message', 'respuesta inesperada'))
-                    blo = pd.DataFrame(j['Data']['Data'])
-                    if blo.empty:
-                        break
-                    marcos.append(blo)
-                    to_ts = int(blo['time'].min()) - 1
-                    continue
-                except Exception:
-                    fallos.append(f'p{_pag}:{type(_e).__name__}')
-                    break
-        if fallos:
-            log(f"CryptoCompare: paginacion interrumpida ({'; '.join(fallos)})")
-        if not marcos:
-            raise RuntimeError('CryptoCompare devolvio 0 velas')
-
-        d = pd.concat(marcos, ignore_index=True)
+        r = requests.get(url, params={'fsym': 'BTC', 'tsym': 'USD', 'limit': 2000},
+                         headers=headers, timeout=25)
+        r.raise_for_status()
+        j = r.json()
+        if j.get('Response') != 'Success':
+            raise RuntimeError(j.get('Message', 'respuesta inesperada'))
+        d = pd.DataFrame(j['Data']['Data'])
         d['timestamp'] = pd.to_datetime(d['time'], unit='s')
-        df = d.set_index('timestamp')[['close', 'high', 'low']].astype(float)
-        df = df[~df.index.duplicated(keep='last')].sort_index()
-        df = df[(df > 0).all(axis=1)]
+        d = d.set_index('timestamp')[['close', 'high', 'low']].astype(float)
+        d = d[(d > 0).all(axis=1)].sort_index()
         if CONFIG['BAR'] != '1d':
             _h = int(CONFIG['BAR'].replace('h', ''))
-            df = df.resample(f'{_h}h', label='left', closed='left').agg(
+            d = d.resample(f'{_h}h', label='left', closed='left').agg(
                 {'close': 'last', 'high': 'max', 'low': 'min'}).dropna()
-        if len(df) < minimo:
-            raise RuntimeError(f'solo {len(df)} velas de {CONFIG["BAR"]} (minimo {minimo})')
-        source = f"CryptoCompare ({CONFIG['BAR']})"
+        return d, f"CryptoCompare ({CONFIG['BAR']})", errores
     except Exception as e:
-        log(f'CryptoCompare no disponible ({type(e).__name__}) -> Binance')
-        try:
-            rows, end = [], None
-            # A 4h hacen falta ~6x mas barras para cubrir la misma historia.
-            _paginas = 3 if CONFIG['BAR'] == '1d' else 12
-            for _ in range(_paginas):
-                p = {'symbol': 'BTCUSDT', 'interval': CONFIG['BAR'], 'limit': 1000}
-                if end:
-                    p['endTime'] = end
-                r = requests.get('https://api.binance.com/api/v3/klines', params=p, timeout=20)
-                r.raise_for_status()
-                k = r.json()
-                if not k:
-                    break
-                rows = k + rows
-                end = k[0][0] - 1
-                if len(k) < 1000:
-                    break
-            d = pd.DataFrame(rows, columns=['t', 'open', 'high', 'low', 'close', 'vol',
-                                            'ct', 'volume', 'n', 'tb', 'tq', 'ig'])
-            d['timestamp'] = pd.to_datetime(d['t'], unit='ms')
-            df = d.set_index('timestamp')[['close', 'high', 'low']].astype(float)
-            df = df[~df.index.duplicated(keep='last')].sort_index()
-            source = 'Binance (klines)'
-        except Exception as e2:
-            log(f'Binance no disponible ({type(e2).__name__}) -> Kraken')
-            # KRAKEN (v3.3): tercer nivel que faltaba. Es la unica fuente que
-            # responde desde los runners de GitHub cuando CryptoCompare agota su
-            # limite y Binance bloquea por IP. Sin el, una temporalidad NUEVA
-            # —sin cache previo en el repo— se quedaba sin ninguna via: por eso
-            # 4h funcionaba (ya tenia cache) y 8h fallaba en su primera corrida.
-            try:
-                df = fetch_kraken(CONFIG['BAR'])
-                source = f"Kraken ({CONFIG['BAR']})"
-                ALERTS.append('CryptoCompare y Binance fallaron: se uso Kraken '
-                              '(historia limitada a ~120 dias).')
-            except Exception as e3:
-                log(f'Kraken no disponible ({type(e3).__name__}: {e3}) -> cache')
-            if df is None and os.path.exists(CONFIG['PRICE_CACHE']):
-                df = pd.read_csv(CONFIG['PRICE_CACHE'], parse_dates=[0], index_col=0)
-                for c in ('high', 'low'):
-                    if c not in df.columns:
-                        df[c] = df['close']
-                df = df[['close', 'high', 'low']].astype(float)
-                source = 'cache local'
-                ALERTS.append('Fetch de precio fallido en ambas APIs: se uso el cache local.')
+        errores.append(f'CryptoCompare: {type(e).__name__}: {str(e)[:80]}')
 
-    if df is None or len(df) == 0:
+    # --- 3. Binance: bloqueado desde EE.UU., util solo en ejecucion local ---
+    try:
+        r = requests.get('https://api.binance.com/api/v3/klines',
+                         params={'symbol': 'BTCUSDT', 'interval': CONFIG['BAR'],
+                                 'limit': 1000}, timeout=20)
+        r.raise_for_status()
+        k = r.json()
+        d = pd.DataFrame(k, columns=['t', 'o', 'high', 'low', 'close', 'v',
+                                     'ct', 'q', 'n', 'tb', 'tq', 'ig'])
+        d['timestamp'] = pd.to_datetime(d['t'], unit='ms')
+        d = d.set_index('timestamp')[['close', 'high', 'low']].astype(float)
+        return d.sort_index(), f"Binance ({CONFIG['BAR']})", errores
+    except Exception as e:
+        errores.append(f'Binance: {type(e).__name__}')
+
+    return None, None, errores
+
+
+def fetch_prices():
+    """Cache acumulativo + descarga incremental.
+
+    El cache del repo aporta la historia; la API solo las velas nuevas. Ambos se
+    fusionan y el resultado se vuelve a guardar, de modo que la historia crece
+    con cada corrida en vez de redescargarse entera.
+    """
+    cache = cargar_cache()
+    nuevas, source, errores = descargar_recientes()
+
+    if nuevas is None and cache is None:
         raise RuntimeError(
-            f"Sin datos de precio para barra {CONFIG['BAR']}: fallaron "
-            'CryptoCompare (limite de peticiones), Binance (bloqueo de IPs de \n'
-            'EE.UU.) y Kraken, y no existe cache local. Si es la primera corrida \n'
-            'de esta temporalidad, no hay cache que usar: reintenta en unos \n'
-            'minutos o carga CRYPTOCOMPARE_API_KEY en los secrets del repo.')
+            f"Sin datos para barra {CONFIG['BAR']}: fallaron todas las fuentes "
+            f"({'; '.join(errores)}) y no hay cache en el repo.")
 
-    df = df.sort_index()
-    # Solo barras CERRADAS: se descarta la barra en curso, sea de 24h o de 4h.
+    if nuevas is None:
+        log(f"Descarga fallida ({'; '.join(errores)}) — se opera con el cache")
+        df, source = cache, f"cache del repo ({len(cache)} velas)"
+        agregadas = 0
+    elif cache is None:
+        df, agregadas = nuevas, len(nuevas)
+        log(f'Sin cache previo: se inicia con {len(nuevas)} velas de {source}')
+    else:
+        antes = len(cache)
+        df = pd.concat([cache, nuevas])
+        df = df[~df.index.duplicated(keep='last')].sort_index()
+        agregadas = len(df) - antes
+        log(f'Cache {antes} + {len(nuevas)} descargadas -> {len(df)} velas '
+            f'(+{agregadas} nuevas) via {source}')
+
+    # solo barras cerradas
     ahora = pd.Timestamp(dt.datetime.now(dt.timezone.utc)).tz_localize(None)
     if CONFIG['BAR'] == '1d':
         corte = pd.Timestamp(ahora.date())
     else:
-        _h = int(CONFIG['BAR'].replace('h', ''))
-        corte = ahora.floor(f'{_h}h')
+        corte = ahora.floor(f"{int(CONFIG['BAR'].replace('h', ''))}h")
     df = df[df.index < corte]
-    if source != 'cache local':
-        try:
-            df.to_csv(CONFIG['PRICE_CACHE'])
-        except Exception:
-            pass
-    log(f'Precios: {len(df)} velas via {source} (hasta {df.index[-1].date()})')
+
+    if len(df) < 120:
+        raise RuntimeError(f'Solo {len(df)} velas de {CONFIG["BAR"]}: insuficiente')
+
+    # Se reescribe el cache YA FUSIONADO: asi la historia se acumula.
+    try:
+        df.to_csv(CONFIG['PRICE_CACHE'])
+    except Exception as e:
+        log(f'No se pudo guardar el cache ({type(e).__name__})')
+
+    log(f'Precios: {len(df)} velas via {source} (hasta {df.index[-1]})')
     return df, source
 
 
