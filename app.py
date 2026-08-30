@@ -537,7 +537,7 @@ BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
 
 # Marcador visible en el sidebar: permite confirmar de un vistazo que el
 # despliegue corresponde al archivo entregado, sin abrir el codigo.
-APP_VERSION = 'v4.2'
+APP_VERSION = 'v4.3'
 
 
 def bar_actual():
@@ -1417,7 +1417,69 @@ PROHIBIDO (reglas duras, sin excepciones):
 6. Menciona la naturaleza informativa (no asesoria financiera) cuando la conversacion se
    acerque a una decision de inversion.
 
+FORMATO (importante): responde en TEXTO PLANO. Nada de LaTeX: ni \\frac, ni \\boxed,
+ni \\text, ni $...$, ni \\approx. Las divisiones se escriben con barra normal
+("2% / 4% = 0,5") y los resultados con cifras corrientes. Puedes usar **negrita**
+de Markdown, pero ninguna notacion matematica que requiera renderizado.
+
 ESTILO: conciso, con los numeros reales de arriba, en el idioma del usuario."""
+
+
+def limpiar_latex(texto):
+    """Convierte a texto plano cualquier LaTeX que el modelo emita igualmente.
+
+    st.markdown no renderiza LaTeX, asi que sin esto el usuario veia cadenas como
+    \\boxed{\\text{Tamano de posicion}} = \\frac{0.02}{0.0133} en crudo. El prompt
+    ya lo prohibe, pero un modelo de lenguaje no garantiza obediencia: esta pasada
+    es la red de seguridad.
+
+    ORDEN IMPORTANTE: primero los envoltorios de una llave (\\boxed, \\text...) y
+    despues \\frac. Al reves, \\frac deja llaves sueltas que impiden reconocer al
+    envoltorio que lo contiene.
+    """
+    import re as _re
+    t = texto
+
+    # 1) envoltorios de una sola llave, de dentro hacia fuera
+    for _ in range(4):
+        antes = t
+        for cmd in ('boxed', 'text', 'mathrm', 'mathbf', 'textbf', 'mbox', 'operatorname'):
+            t = _re.sub(r'\\' + cmd + r'\s*\{([^{}]*)\}', r'\1', t)
+        if t == antes:
+            break
+
+    # 2) fracciones, tambien anidadas
+    for _ in range(4):
+        antes = t
+        t = _re.sub(r'\\[dt]?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}', r'(\1) / (\2)', t)
+        if t == antes:
+            break
+
+    # 3) por si quedan envoltorios que antes tenian llaves anidadas
+    for _ in range(3):
+        antes = t
+        for cmd in ('boxed', 'text', 'mathrm', 'mathbf', 'textbf', 'mbox'):
+            t = _re.sub(r'\\' + cmd + r'\s*\{([^{}]*)\}', r'\1', t)
+        if t == antes:
+            break
+
+    # 4) simbolos y espaciadores
+    for pat, rep in ((r'\\approx', '≈'), (r'\\times', '×'), (r'\\cdot', '·'),
+                     (r'\\pm', '±'), (r'\\leq?', '≤'), (r'\\geq?', '≥'),
+                     (r'\\neq', '≠'), (r'\\%', '%'), (r'\\,', ' '),
+                     (r'\\;', ' '), (r'\\quad', '  '), (r'\\left', ''),
+                     (r'\\right', '')):
+        t = _re.sub(pat, rep, t)
+
+    # 5) delimitadores de formula
+    t = _re.sub(r'\$\$(.*?)\$\$', r'\1', t, flags=_re.S)
+    t = _re.sub(r'\$([^$\n]*?)\$', r'\1', t)
+    t = t.replace('\\[', '').replace('\\]', '')
+    t = _re.sub(r'^\s*\[\s*$', '', t, flags=_re.M)
+    t = _re.sub(r'^\s*\]\s*$', '', t, flags=_re.M)
+    t = _re.sub(r'\(\(([^()]*)\)\)', r'(\1)', t)
+    t = _re.sub(r'\n{3,}', '\n\n', t)
+    return t.strip()
 
 
 def render_asistente():
@@ -1483,6 +1545,7 @@ def render_asistente():
                     continue
             if texto is None:
                 raise _err
+            texto = limpiar_latex(texto)
             st.session_state.mensajes.append({'role': 'assistant', 'content': texto})
             st.rerun()
         except Exception as e:
