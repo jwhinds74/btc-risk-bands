@@ -537,7 +537,7 @@ BAR_DEFECTO = os.environ.get('BAR_INTERVAL', '1d')
 
 # Marcador visible en el sidebar: permite confirmar de un vistazo que el
 # despliegue corresponde al archivo entregado, sin abrir el codigo.
-APP_VERSION = 'v4.1'
+APP_VERSION = 'v4.2'
 
 
 def bar_actual():
@@ -2097,8 +2097,19 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                 # ------------------------------------------------------------
                 _ult = pd.Timestamp(hl['fecha'].max())
                 _bar_h = 24 if bar_actual() == '1d' else int(bar_actual().replace('h', ''))
-                _atraso_h = (pd.Timestamp.utcnow().tz_localize(None) - _ult).total_seconds() / 3600
-                _barras_atraso = int(_atraso_h // _bar_h)
+
+                # El retraso se mide contra la ULTIMA BARRA CERRADA, no contra
+                # "ahora". El monitor nunca puede registrar la barra en curso, asi
+                # que medir desde el instante actual sumaba siempre una barra
+                # fantasma: en H8, justo antes de cada corrida el retraso aparente
+                # llegaba a 2 barras y disparaba alerta roja sin que nada fallara.
+                _ahora_utc = pd.Timestamp.utcnow().tz_localize(None)
+                if bar_actual() == '1d':
+                    _ult_cerrada = pd.Timestamp(_ahora_utc.date()) - pd.Timedelta(days=1)
+                else:
+                    _ult_cerrada = _ahora_utc.floor(f'{_bar_h}h') - pd.Timedelta(hours=_bar_h)
+                _barras_atraso = max(0, int(round(
+                    (_ult_cerrada - _ult).total_seconds() / 3600 / _bar_h)))
                 _unidad = 'días' if bar_actual() == '1d' else f"barras de {BARRAS[bar_actual()]['etq']}"
 
                 # ¿Corrio el monitor aunque no escribiera fila? El latido lo dice.
@@ -2143,12 +2154,13 @@ if st.session_state.get('listo') and all(k in st.session_state for k in _CLAVES)
                         "pausado el cron: basta con lanzarlo a mano una vez (*Run workflow*) "
                         "para reactivarlo.")
                 elif _barras_atraso == 1:
-                    st.info(f"ℹ️ Última entrada del monitor: {_ult.strftime('%Y-%m-%d %H:%M')} UTC "
-                            f"({_barras_atraso} {_unidad} de retraso). Normal si la barra actual "
-                            "aún no ha cerrado.")
+                    st.info(f"ℹ️ Última entrada: {_ult.strftime('%Y-%m-%d %H:%M')} UTC · "
+                            f"última barra cerrada: {_ult_cerrada.strftime('%Y-%m-%d %H:%M')} UTC. "
+                            "Una barra de retraso: normal entre corridas programadas.")
                 else:
                     st.success(f"✅ Monitor al día · última entrada "
-                               f"{_ult.strftime('%Y-%m-%d %H:%M')} UTC")
+                               f"{_ult.strftime('%Y-%m-%d %H:%M')} UTC "
+                               f"(= última barra cerrada)")
 
                 k1, k2, k3 = st.columns(3)
                 with k1:
