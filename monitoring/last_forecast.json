@@ -1,23 +1,23 @@
 {
-  "emitted_at_utc": "2026-08-30T06:26:12+00:00",
-  "target_date": "2026-08-30",
-  "base_close": 78227.8,
-  "base_date": "2026-08-29",
+  "emitted_at_utc": "2026-08-31T06:53:06+00:00",
+  "target_date": "2026-08-31",
+  "base_close": 77681.6,
+  "base_date": "2026-08-30",
   "bar": "1d",
   "motor": "HAR-RV",
-  "sigma": 0.025621,
-  "sigma_cruda": 0.026445,
-  "mz_a": -2.1e-05,
+  "sigma": 0.018595,
+  "sigma_cruda": 0.019181,
+  "mz_a": -4e-06,
   "mz_b": 0.9696,
-  "train_window": 700,
+  "train_window": 701,
   "coef": [
-    0.007319,
-    0.278205,
-    0.22728,
-    0.140639
+    0.007326,
+    0.277893,
+    0.227608,
+    0.140429
   ],
-  "banda_lo_95": 74546.88,
-  "banda_hi_95": 83055.2,
-  "centro": 78305.42,
+  "banda_lo_95": 74109.72,
+  "banda_hi_95": 81131.5,
+  "centro": 77649.46,
   "fuente": "Kraken (1d)"
 }
