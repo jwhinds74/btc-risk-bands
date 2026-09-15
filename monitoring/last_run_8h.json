@@ -1,9 +1,9 @@
 {
-  "ran_at_utc": "2026-09-14T20:16:27+00:00",
+  "ran_at_utc": "2026-09-15T04:42:56+00:00",
   "bar": "8h",
-  "last_bar": "2026-09-14 08:00:00",
+  "last_bar": "2026-09-14 16:00:00",
   "source": "Kraken (8h)",
   "stale": false,
-  "n_velas": 411,
+  "n_velas": 412,
   "model_version": "HAR-RV-4.1-8h"
 }
